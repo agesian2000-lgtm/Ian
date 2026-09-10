@@ -1,17 +1,12 @@
 workflows:
-  ios-workflow:
-    name: iOS Build
+  ios-unsigned-workflow:
+    name: iOS Unsigned Build (free Apple ID sideload)
     max_build_duration: 60
     instance_type: mac_mini_m2
     environment:
       flutter: stable
       xcode: latest
       cocoapods: default
-      ios_signing:
-        distribution_type: ad_hoc
-        bundle_identifier: com.example.expensetracker
-      groups:
-        - app_store_credentials
     triggering:
       events:
         - push
@@ -22,16 +17,16 @@ workflows:
       - name: Get Flutter packages
         script: |
           flutter packages pub get
-      - name: Set up code signing
+      - name: Build unsigned iOS app
         script: |
-          xcode-project use-profiles
-      - name: Build IPA
+          flutter build ios --release --no-codesign
+      - name: Package unsigned IPA
         script: |
-          flutter build ipa --release \
-            --export-options-plist=/Users/builder/export_options.plist
+          mkdir -p build/ios/ipa/Payload
+          cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          cd build/ios/ipa && zip -r expensetracker-unsigned.ipa Payload
     artifacts:
       - build/ios/ipa/*.ipa
-      - /tmp/xcodebuild_logs/*.log
     publishing:
       email:
         recipients:
@@ -39,6 +34,3 @@ workflows:
         notify:
           success: true
           failure: true
-      app_store_connect:
-        auth: integration
-        submit_to_testflight: true
