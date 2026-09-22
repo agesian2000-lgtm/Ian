@@ -957,6 +957,8 @@ async function submitDeposit(){
 function openReceivablePaymentModal(receivableId){
   const r = receivables.find(x=>x.id===receivableId);
   if(!r) return;
+  const srcOptions = profile.moneySources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('')
+    + `<option value="external">External / not tracked in app</option>`;
 
   $('#modal-root').innerHTML = `
     <div class="modal-overlay" id="modal-overlay">
@@ -964,6 +966,8 @@ function openReceivablePaymentModal(receivableId){
         <div class="modal-head"><h2>Log Payment</h2><button class="x-btn" id="modal-x">&times;</button></div>
         <div class="modal-sub">${esc(r.debtorName)} · ${esc(r.item)} — ${peso(r.balance)} owed</div>
         <div class="field"><label>Amount received (₱)</label><input id="r-amount" type="number" inputmode="decimal" min="0" step="0.01" value="${r.monthlyAmount}"></div>
+        <div class="field"><label>Deposit into</label><select id="r-into">${srcOptions}</select></div>
+        <div class="field-hint">Adds the payment to that account's balance. Pick "External" if you're not putting it into a tracked account.</div>
         <div class="err-text" id="modal-err"></div>
         <div class="btn-row">
           <button class="btn ghost" id="modal-cancel">Cancel</button>
@@ -976,13 +980,24 @@ function openReceivablePaymentModal(receivableId){
   $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
   $('#modal-save').onclick = async ()=>{
     const amount = parseFloat($('#r-amount').value);
+    const intoId = $('#r-into').value;
     const errEl = $('#modal-err');
     if(!amount || amount<=0){ errEl.textContent='Enter a valid amount.'; return; }
+    const intoSource = intoId!=='external' ? profile.moneySources.find(s=>s.id===intoId) : null;
+    if(intoId!=='external' && !intoSource){ errEl.textContent='Select an account.'; return; }
     $('#modal-save').textContent = 'Saving…';
     $('#modal-save').disabled = true;
     try{
       const newBalance = Math.max(0, Number(r.balance) - amount);
       await updateDoc(doc(db,'people',personId,'receivables',r.id), { balance: newBalance });
+      if(intoSource){
+        const updatedSources = profile.moneySources.map(s => s.id===intoSource.id ? {...s, balance: Number(s.balance)+amount} : s);
+        await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+        await addDoc(collection(db,'people',personId,'deposits'), {
+          sourceId: intoSource.id, sourceName: intoSource.name, amount,
+          note: `Payment: ${r.debtorName} (${r.item})`, date: new Date().toISOString(), createdAt: Date.now()
+        });
+      }
       closeModal();
       toast('Payment logged');
     }catch(err){
