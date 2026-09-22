@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ledger — Expense Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --paper:#F5F7F3; --ink:#16241F; --peso:#1F6F54; --peso-soft:#E4EEE8;
+    --ballpen:#2D5FA6; --ballpen-soft:#E3EAF4; --brick:#B23A2E; --brick-soft:#F6E4E1;
+    --amber:#B4790F; --amber-soft:#F5EAD9; --muted:#5C6D63; --line:#D8DED4;
+    --surface:#FFFFFF; --shadow:rgba(22,36,31,0.08); --overlay:rgba(16,32,26,0.5);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --paper:#0F1D18; --ink:#EAEEE9; --peso:#49AD84; --peso-soft:#153228;
+      --ballpen:#87B0EA; --ballpen-soft:#17263C; --brick:#E58374; --brick-soft:#3A1E1C;
+      --amber:#E0AD5C; --amber-soft:#332811; --muted:#8FA398; --line:#25352C;
+      --surface:#16241E; --shadow:rgba(0,0,0,0.4); --overlay:rgba(6,12,10,0.65);
+    }
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:'IBM Plex Sans',system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    padding-inline:16px; padding-block:20px;
+  }
+  h1,h2,h3{font-family:'IBM Plex Serif',Georgia,serif; text-wrap:balance; margin:0;}
+  .mono{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums;}
+  .muted{color:var(--muted);}
+  #app{max-width:560px; margin:0 auto;}
+  button{font-family:inherit; cursor:pointer;}
+  input, select{font-family:inherit; font-size:15px;}
+  a{color:var(--ballpen);}
+
+  /* -------- gate -------- */
+  .gate-wrap{min-height:80vh; display:flex; align-items:center; justify-content:center;}
+  .gate-card{width:100%; max-width:380px; background:var(--surface); border:1px solid var(--line);
+    border-radius:14px; padding:32px 28px; box-shadow:0 2px 10px var(--shadow);}
+  .wordmark{font-family:'IBM Plex Serif'; font-weight:700; font-size:26px; letter-spacing:-0.02em; margin-bottom:4px;
+    display:flex; align-items:baseline; gap:8px;}
+  .wordmark .peso-mark{color:var(--peso);}
+  .gate-sub{color:var(--muted); font-size:14px; margin-bottom:24px; line-height:1.5;}
+  .field{margin-bottom:16px;}
+  .field label{display:block; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--muted); margin-bottom:6px;}
+  .field input, .field select{
+    width:100%; height:44px; border:1px solid var(--line); border-radius:9px; background:var(--paper);
+    color:var(--ink); padding:0 13px;
+  }
+  .field input:focus, .field select:focus{outline:2px solid var(--peso); outline-offset:1px;}
+  .field-hint{font-size:12px; color:var(--muted); margin-top:6px; line-height:1.4;}
+  .btn{
+    display:inline-flex; align-items:center; justify-content:center; gap:6px;
+    height:44px; padding:0 20px; border-radius:9px; border:none;
+    background:var(--peso); color:#fff; font-weight:600; font-size:15px; width:100%;
+  }
+  .btn:active{transform:translateY(1px);}
+  .btn.ghost{background:transparent; color:var(--ink); border:1px solid var(--line);}
+  .btn.small{height:36px; padding:0 14px; font-size:13px; width:auto;}
+  .btn.danger{background:var(--brick);}
+  .err-text{color:var(--brick); font-size:13px; margin-top:10px; min-height:16px;}
+  .back-link{background:none; border:none; color:var(--ballpen); font-size:13px; padding:0; margin-bottom:16px; font-weight:600;}
+
+  /* -------- app shell -------- */
+  .topbar{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; gap:12px;}
+  .who{font-size:13px; color:var(--muted);}
+  .who b{color:var(--ink); font-weight:600;}
+  .switch-btn{background:none; border:none; color:var(--ballpen); font-size:13px; font-weight:600; padding:4px 0;}
+
+  .tabs{display:flex; gap:4px; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:4px; margin-bottom:20px;}
+  .tab{flex:1; text-align:center; padding:10px 0; border-radius:8px; font-weight:600; font-size:14px; border:none; background:transparent; color:var(--muted);}
+  .tab.active{background:var(--peso); color:#fff;}
+
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:13px; padding:18px; box-shadow:0 1px 3px var(--shadow); margin-bottom:16px;}
+  .card h3{font-size:15px; margin-bottom:12px;}
+  .row-between{display:flex; align-items:center; justify-content:space-between;}
+  .section-title{font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:22px 0 10px;}
+
+  .tf-select{display:flex; gap:6px; margin-bottom:16px;}
+  .tf-btn{flex:1; height:38px; border-radius:8px; border:1px solid var(--line); background:var(--surface); color:var(--ink); font-weight:600; font-size:13px;}
+  .tf-btn.active{background:var(--ink); color:var(--paper); border-color:var(--ink);}
+
+  .gauge-track{height:9px; background:var(--line); border-radius:5px; overflow:hidden; margin:10px 0 14px;}
+  .gauge-fill{height:100%; border-radius:5px; transition:width .25s ease;}
+  .budget-figures{display:flex; justify-content:space-between; font-size:13px;}
+  .budget-figures .amt{font-size:17px; display:block; margin-top:2px;}
+  .warn-line{display:flex; align-items:center; gap:6px; margin-top:12px; font-size:12.5px; font-weight:600;}
+
+  .balance-list{display:flex; flex-direction:column; gap:0;}
+  .balance-row{display:flex; justify-content:space-between; align-items:center; padding:11px 0; border-bottom:1px solid var(--line);}
+  .balance-row:last-child{border-bottom:none;}
+  .balance-row .name{font-weight:600; font-size:14px;}
+  .balance-row .type{font-size:12px; color:var(--muted);}
+
+  .ledger-row{display:flex; justify-content:space-between; align-items:flex-start; padding:12px 0; border-bottom:1px solid var(--line); gap:10px;}
+  .ledger-row:last-child{border-bottom:none;}
+  .ledger-main{display:flex; flex-direction:column; gap:3px; min-width:0;}
+  .ledger-cat{font-weight:600; font-size:14px;}
+  .ledger-meta{font-size:12px; color:var(--muted);}
+  .ledger-tags{display:flex; gap:6px; margin-top:3px; flex-wrap:wrap;}
+  .tag{font-size:11px; border:1px solid var(--line); border-radius:999px; padding:2px 9px; color:var(--muted);}
+  .tag.person{background:var(--ballpen-soft); color:var(--ballpen); border-color:transparent; font-weight:600;}
+  .ledger-amt{font-weight:600; font-size:14.5px; white-space:nowrap;}
+  .empty-note{color:var(--muted); font-size:13.5px; text-align:center; padding:28px 0;}
+
+  .chip-row{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;}
+  .chip{display:inline-flex; align-items:center; gap:7px; padding:6px 12px; border-radius:999px; font-size:13px; border:1px solid var(--line); background:var(--paper);}
+  .chip button{background:none; border:none; color:var(--muted); font-size:14px; line-height:1; padding:0;}
+  .inline-add{display:flex; gap:8px;}
+  .inline-add input{flex:1;}
+
+  .source-card{border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:10px;}
+  .source-top{display:flex; justify-content:space-between; align-items:center;}
+  .source-edit{display:flex; gap:8px; margin-top:8px;}
+  .source-edit input{flex:1; height:36px;}
+  .icon-btn{background:none; border:none; color:var(--brick); font-size:16px; padding:2px 4px;}
+
+  .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px;}
+  .stat-tile{background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px;}
+  .stat-tile .label{font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:700;}
+  .stat-tile .value{font-size:21px; margin-top:5px;}
+
+  .bar-row{display:flex; align-items:center; gap:10px; margin-bottom:10px;}
+  .bar-label{width:92px; font-size:12.5px; flex-shrink:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .bar-track{flex:1; height:14px; background:var(--line); border-radius:4px; overflow:hidden;}
+  .bar-fill{height:100%; border-radius:4px;}
+  .bar-val{width:78px; text-align:right; font-size:12.5px; flex-shrink:0;}
+
+  /* -------- modal -------- */
+  .modal-overlay{position:fixed; inset:0; background:var(--overlay); display:flex; align-items:flex-end; justify-content:center; z-index:50; padding:0;}
+  @media (min-width:520px){ .modal-overlay{align-items:center; padding:20px;} }
+  .modal{background:var(--surface); width:100%; max-width:460px; max-height:92vh; overflow-y:auto;
+    border-radius:18px 18px 0 0; padding:24px 22px calc(24px + env(safe-area-inset-bottom,0px));}
+  @media (min-width:520px){ .modal{border-radius:16px;} }
+  .modal h2{font-size:19px; margin-bottom:4px;}
+  .modal-sub{color:var(--muted); font-size:13px; margin-bottom:18px;}
+  .modal-close{position:absolute; top:0; right:0;}
+  .modal-head{display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;}
+  .x-btn{background:none; border:none; font-size:20px; color:var(--muted); line-height:1; padding:2px 4px;}
+  .btn-row{display:flex; gap:10px; margin-top:20px;}
+  .btn-row .btn{width:auto; flex:1;}
+
+  .toast{position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--ink); color:var(--paper);
+    padding:11px 20px; border-radius:9px; font-size:13.5px; font-weight:500; z-index:100; box-shadow:0 4px 14px var(--shadow);
+    opacity:0; transition:opacity .2s; pointer-events:none;}
+  .toast.show{opacity:1;}
+
+  footer.security-note{margin-top:28px; text-align:center; font-size:11.5px; color:var(--muted); line-height:1.5;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="modal-root"></div>
+<div id="toast" class="toast"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+import {
+  getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc,
+  query, orderBy, limit, onSnapshot
+} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDlOMuZy75yiB82SKUl0amUwZZ_GcT6HVY",
+  authDomain: "expensetracker-3b47f.firebaseapp.com",
+  projectId: "expensetracker-3b47f",
+  storageBucket: "expensetracker-3b47f.firebasestorage.app",
+  messagingSenderId: "754439634375",
+  appId: "1:754439634375:web:ce5ae95bc3a7356753ade2"
+};
+const fbApp = initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
+
+const PAYMENT_METHODS = ['Cash','GCash','Debit Card','Credit Card'];
+const SOURCE_TYPES = ['Credit Card','Debit Card','Bank Account','Cash','E-Wallet (GCash/PayMaya)'];
+
+/* ---------------- helpers ---------------- */
+const $ = sel => document.querySelector(sel);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const peso = n => '₱' + (Number(n)||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});
+const cryptoId = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+const slugify = s => s.trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || 'user';
+
+async function hashPin(personSlug, pin){
+  const data = new TextEncoder().encode('ledger_v1_' + personSlug + '_' + pin);
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+let toastTimer;
+function toast(msg){
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>el.classList.remove('show'), 2400);
+}
+
+function isInTimeFrame(dateStr, frame){
+  const d = new Date(dateStr);
+  const now = new Date();
+  if (frame === 'daily'){
+    return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth() && d.getDate()===now.getDate();
+  }
+  if (frame === 'weekly'){
+    const day = now.getDay();
+    const diffToMonday = (day === 0 ? 6 : day - 1);
+    const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diffToMonday);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate()+7);
+    return d >= weekStart && d < weekEnd;
+  }
+  return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth();
+}
+
+function defaultProfile(displayName, pinHash){
+  return {
+    displayName, pinHash,
+    budgets: { daily:50, weekly:300, monthly:1000 },
+    categories: ['Food','Transportation','Sports','Utilities','Bills','Shopping'],
+    moneySources: [
+      { id: cryptoId(), name:'GCash', type:'E-Wallet (GCash/PayMaya)', balance:5000 },
+      { id: cryptoId(), name:'BDO Debit', type:'Debit Card', balance:25000 },
+      { id: cryptoId(), name:'BDO Credit', type:'Credit Card', balance:50000 },
+    ],
+    savings: 0,
+    createdAt: Date.now(),
+  };
+}
+
+/* ---------------- state ---------------- */
+let personId = localStorage.getItem('ledger_person_id') || null;
+let profile = null;
+let myExpenses = [];
+let sharedExpenses = [];
+let timeFrame = localStorage.getItem('ledger_timeframe') || 'daily';
+let activeTab = 'tracker';
+let gateStep = 'name'; // name | pin-existing | pin-new
+let gateName = '';
+let unsubProfile=null, unsubMine=null, unsubShared=null;
+
+function teardownSubs(){
+  if(unsubProfile) unsubProfile();
+  if(unsubMine) unsubMine();
+  if(unsubShared) unsubShared();
+  unsubProfile=unsubMine=unsubShared=null;
+}
+
+function logout(){
+  teardownSubs();
+  localStorage.removeItem('ledger_person_id');
+  personId=null; profile=null; myExpenses=[]; sharedExpenses=[];
+  gateStep='name'; gateName='';
+  renderRoot();
+}
+
+function subscribeAll(){
+  const profRef = doc(db,'people',personId);
+  unsubProfile = onSnapshot(profRef, snap=>{
+    if(!snap.exists()){ logout(); return; }
+    profile = snap.data();
+    render();
+  }, err=>{ console.error(err); toast('Connection issue — retrying…'); });
+
+  const mineQ = query(collection(db,'people',personId,'expenses'), orderBy('date','desc'), limit(300));
+  unsubMine = onSnapshot(mineQ, snap=>{
+    myExpenses = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, err=>console.error(err));
+
+  const sharedQ = query(collection(db,'sharedExpenses'), orderBy('createdAt','desc'), limit(400));
+  unsubShared = onSnapshot(sharedQ, snap=>{
+    sharedExpenses = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, err=>console.error(err));
+}
+
+/* ---------------- gate flow ---------------- */
+async function gateContinue(){
+  const errEl = $('#gate-err');
+  if(errEl) errEl.textContent = '';
+
+  if(gateStep === 'name'){
+    const nameInput = $('#gate-name-input');
+    const name = nameInput.value.trim();
+    if(!name){ if(errEl) errEl.textContent = 'Enter your name.'; return; }
+    gateName = name;
+    const slug = slugify(name);
+    const snap = await getDoc(doc(db,'people',slug));
+    gateStep = snap.exists() ? 'pin-existing' : 'pin-new';
+    renderRoot();
+    return;
+  }
+
+  if(gateStep === 'pin-existing'){
+    const pin = $('#gate-pin-input').value.trim();
+    if(!/^\d{4}$/.test(pin)){ if(errEl) errEl.textContent = 'Enter your 4-digit PIN.'; return; }
+    const slug = slugify(gateName);
+    const snap = await getDoc(doc(db,'people',slug));
+    if(!snap.exists()){ gateStep='pin-new'; renderRoot(); return; }
+    const data = snap.data();
+    const hash = await hashPin(slug, pin);
+    if(hash !== data.pinHash){ if(errEl) errEl.textContent = 'Wrong PIN. Try again.'; return; }
+    personId = slug;
+    localStorage.setItem('ledger_person_id', slug);
+    subscribeAll();
+    renderRoot();
+    return;
+  }
+
+  if(gateStep === 'pin-new'){
+    const pin = $('#gate-pin-input').value.trim();
+    const pin2 = $('#gate-pin-confirm').value.trim();
+    if(!/^\d{4}$/.test(pin)){ if(errEl) errEl.textContent = 'PIN must be exactly 4 digits.'; return; }
+    if(pin !== pin2){ if(errEl) errEl.textContent = 'PINs don\'t match.'; return; }
+    const slug = slugify(gateName);
+    const hash = await hashPin(slug, pin);
+    await setDoc(doc(db,'people',slug), defaultProfile(gateName, hash));
+    personId = slug;
+    localStorage.setItem('ledger_person_id', slug);
+    subscribeAll();
+    renderRoot();
+    return;
+  }
+}
+
+function gateBack(){
+  gateStep = 'name';
+  renderRoot();
+}
+
+function renderGate(){
+  const app = $('#app');
+  if(gateStep === 'name'){
+    app.innerHTML = `
+      <div class="gate-wrap"><div class="gate-card">
+        <div class="wordmark"><span class="peso-mark">₱</span>Ledger</div>
+        <div class="gate-sub">A shared family expense tracker. Enter your name to open your own tracker, or create one.</div>
+        <div class="field"><label>Your name</label><input id="gate-name-input" type="text" placeholder="e.g. Ian" autocomplete="off"></div>
+        <button class="btn" id="gate-continue">Continue</button>
+        <div class="err-text" id="gate-err"></div>
+      </div></div>`;
+  } else if(gateStep === 'pin-existing'){
+    app.innerHTML = `
+      <div class="gate-wrap"><div class="gate-card">
+        <button class="back-link" id="gate-back">&larr; Not ${esc(gateName)}?</button>
+        <div class="wordmark"><span class="peso-mark">₱</span>Ledger</div>
+        <div class="gate-sub">Welcome back, <b>${esc(gateName)}</b>. Enter your PIN to continue.</div>
+        <div class="field"><label>4-digit PIN</label><input id="gate-pin-input" type="password" inputmode="numeric" maxlength="4" autocomplete="off"></div>
+        <button class="btn" id="gate-continue">Unlock my tracker</button>
+        <div class="err-text" id="gate-err"></div>
+      </div></div>`;
+  } else {
+    app.innerHTML = `
+      <div class="gate-wrap"><div class="gate-card">
+        <button class="back-link" id="gate-back">&larr; Not ${esc(gateName)}?</button>
+        <div class="wordmark"><span class="peso-mark">₱</span>Ledger</div>
+        <div class="gate-sub"><b>${esc(gateName)}</b> is new here. Choose a 4-digit PIN to protect your tracker.</div>
+        <div class="field"><label>Choose a PIN</label><input id="gate-pin-input" type="password" inputmode="numeric" maxlength="4" autocomplete="off"></div>
+        <div class="field"><label>Confirm PIN</label><input id="gate-pin-confirm" type="password" inputmode="numeric" maxlength="4" autocomplete="off"></div>
+        <div class="field-hint">This just keeps family members from mixing up trackers — write it down somewhere, there's no "forgot PIN" recovery.</div>
+        <button class="btn" id="gate-continue">Create my tracker</button>
+        <div class="err-text" id="gate-err"></div>
+      </div></div>`;
+  }
+  $('#gate-continue').onclick = gateContinue;
+  const back = $('#gate-back'); if(back) back.onclick = gateBack;
+  const focusEl = $('#gate-name-input') || $('#gate-pin-input');
+  if(focusEl) focusEl.focus();
+  [ $('#gate-name-input'), $('#gate-pin-input'), $('#gate-pin-confirm') ].forEach(el=>{
+    if(el) el.addEventListener('keydown', e=>{ if(e.key==='Enter') gateContinue(); });
+  });
+}
+
+/* ---------------- main app render ---------------- */
+function totalsFor(expenses, frame, budgets){
+  const filtered = expenses.filter(e=>isInTimeFrame(e.date, frame));
+  const spent = filtered.reduce((s,e)=>s+Number(e.amount||0),0);
+  const budget = frame==='daily'?budgets.daily:frame==='weekly'?budgets.weekly:budgets.monthly;
+  const remaining = Math.min(Math.max(budget-spent,0), budget);
+  return { spent, budget, remaining, filtered };
+}
+
+function renderApp(){
+  const app = $('#app');
+  const totals = totalsFor(myExpenses, timeFrame, profile.budgets);
+  const totalBalance = profile.moneySources.reduce((s,m)=>s+Number(m.balance||0),0);
+  const isOver = totals.spent > totals.budget;
+  const isWarn = !isOver && totals.remaining < totals.budget*0.2;
+  const gaugeColor = isOver ? 'var(--brick)' : isWarn ? 'var(--amber)' : 'var(--peso)';
+  const pct = totals.budget>0 ? Math.min(totals.spent/totals.budget,1)*100 : 0;
+  const tfLabel = {daily:'Daily',weekly:'Weekly',monthly:'Monthly'}[timeFrame];
+
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="who">Signed in as <b>${esc(profile.displayName)}</b></div>
+      <button class="switch-btn" id="switch-person">Switch person</button>
+    </div>
+    <div class="tabs">
+      <button class="tab ${activeTab==='tracker'?'active':''}" data-tab="tracker">My Tracker</button>
+      <button class="tab ${activeTab==='shared'?'active':''}" data-tab="shared">Shared Report</button>
+    </div>
+    <div class="tf-select">
+      ${['daily','weekly','monthly'].map(f=>`<button class="tf-btn ${timeFrame===f?'active':''}" data-tf="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
+    </div>
+    <div id="tab-content"></div>
+    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.</footer>
+  `;
+
+  $('#switch-person').onclick = logout;
+  app.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{ activeTab=b.dataset.tab; render(); });
+  app.querySelectorAll('.tf-btn').forEach(b=>b.onclick=()=>{ timeFrame=b.dataset.tf; localStorage.setItem('ledger_timeframe',timeFrame); render(); });
+
+  const content = $('#tab-content');
+  content.innerHTML = activeTab==='tracker' ? trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, tfLabel) : sharedTabHtml(tfLabel);
+  wireTrackerOrSharedEvents();
+}
+
+function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, tfLabel){
+  const sourcesHtml = profile.moneySources.map(s=>`
+    <div class="balance-row">
+      <div><div class="name">${esc(s.name)}</div><div class="type">${esc(s.type)}</div></div>
+      <div class="mono ledger-amt" style="color:${s.balance<0?'var(--brick)':'var(--peso)'}">${peso(s.balance)}</div>
+    </div>`).join('');
+
+  const expenseRows = totals.filtered.length ? totals.filtered.map(e=>`
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${esc(e.category)}</div>
+        <div class="ledger-meta">${new Date(e.date).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div>
+        <div class="ledger-tags"><span class="tag">${esc(e.paymentMethod)}</span><span class="tag">${esc(e.moneySource)}</span></div>
+        ${e.notes ? `<div class="ledger-meta">${esc(e.notes)}</div>` : ''}
+      </div>
+      <div class="mono ledger-amt">-${peso(e.amount)}</div>
+    </div>`).join('') : `<div class="empty-note">No expenses recorded for this period.</div>`;
+
+  return `
+    <div class="card">
+      <div class="row-between"><h3>${tfLabel} Budget</h3></div>
+      <div class="gauge-track"><div class="gauge-fill" style="width:${pct}%; background:${gaugeColor}"></div></div>
+      <div class="budget-figures">
+        <div>Spent<span class="mono amt">${peso(totals.spent)}</span></div>
+        <div style="text-align:right">Remaining<span class="mono amt">${peso(totals.remaining)}</span></div>
+      </div>
+      ${isOver ? `<div class="warn-line" style="color:var(--brick)">⚠ Over budget by ${peso(totals.spent-totals.budget)}</div>` : ''}
+      ${isWarn ? `<div class="warn-line" style="color:var(--amber)">⚠ Only ${peso(totals.remaining)} remaining</div>` : ''}
+    </div>
+
+    <div class="card">
+      <div class="row-between"><h3>Account Balances</h3><span class="mono" style="font-weight:600">${peso(totalBalance)}</span></div>
+      <div class="balance-list">${sourcesHtml}</div>
+    </div>
+
+    <button class="btn" id="open-add-expense" style="margin-bottom:16px">+ Add Expense</button>
+
+    <div class="card">
+      <h3>Expenses (${tfLabel})</h3>
+      ${expenseRows}
+    </div>
+
+    <div class="card">
+      <div class="row-between">
+        <div><h3 style="margin-bottom:2px">Savings</h3><div class="ledger-meta">Manually tracked</div></div>
+        <div class="mono" style="font-size:19px;font-weight:600;color:var(--peso)">${peso(profile.savings)}</div>
+      </div>
+    </div>
+
+    <button class="btn ghost" id="open-settings" style="margin-top:4px">Settings</button>
+  `;
+}
+
+function sharedTabHtml(tfLabel){
+  const inFrame = sharedExpenses.filter(e=>isInTimeFrame(e.date, timeFrame));
+  const total = inFrame.reduce((s,e)=>s+Number(e.amount||0),0);
+  const byPerson = {}, byCategory = {};
+  inFrame.forEach(e=>{
+    byPerson[e.ownerName] = (byPerson[e.ownerName]||0) + Number(e.amount||0);
+    byCategory[e.category] = (byCategory[e.category]||0) + Number(e.amount||0);
+  });
+  const people = new Set(inFrame.map(e=>e.ownerName));
+  const personEntries = Object.entries(byPerson).sort((a,b)=>b[1]-a[1]);
+  const catEntries = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]);
+  const maxPerson = Math.max(1, ...personEntries.map(e=>e[1]));
+  const maxCat = Math.max(1, ...catEntries.map(e=>e[1]));
+
+  const barRows = (entries, max, color) => entries.map(([label,val])=>`
+    <div class="bar-row">
+      <div class="bar-label" title="${esc(label)}">${esc(label)}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${(val/max*100).toFixed(1)}%; background:${color}"></div></div>
+      <div class="bar-val mono">${peso(val)}</div>
+    </div>`).join('') || `<div class="empty-note">Nothing yet.</div>`;
+
+  const feed = sharedExpenses.slice(0,20).map(e=>`
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${esc(e.category)}</div>
+        <div class="ledger-meta">${new Date(e.date).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div>
+        <div class="ledger-tags"><span class="tag person">${esc(e.ownerName)}</span></div>
+      </div>
+      <div class="mono ledger-amt">-${peso(e.amount)}</div>
+    </div>`).join('') || `<div class="empty-note">No shared activity yet.</div>`;
+
+  return `
+    <div class="stat-grid">
+      <div class="stat-tile"><div class="label">Total (${tfLabel})</div><div class="mono value">${peso(total)}</div></div>
+      <div class="stat-tile"><div class="label">Contributors</div><div class="mono value">${people.size}</div></div>
+    </div>
+    <div class="card"><h3>By Category</h3>${barRows(catEntries, maxCat, 'var(--ballpen)')}</div>
+    <div class="card"><h3>By Person</h3>${barRows(personEntries, maxPerson, 'var(--peso)')}</div>
+    <div class="card"><h3>Recent Activity</h3>${feed}</div>
+  `;
+}
+
+function wireTrackerOrSharedEvents(){
+  const addBtn = $('#open-add-expense');
+  if(addBtn) addBtn.onclick = openAddExpenseModal;
+  const settingsBtn = $('#open-settings');
+  if(settingsBtn) settingsBtn.onclick = openSettingsModal;
+}
+
+/* ---------------- modal: add expense ---------------- */
+function closeModal(){ $('#modal-root').innerHTML = ''; }
+
+function openAddExpenseModal(){
+  const catOptions = profile.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  const pmOptions = PAYMENT_METHODS.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('');
+  const srcOptions = profile.moneySources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('');
+
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Add Expense</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">Logged to your tracker and the shared report.</div>
+        <div class="field"><label>Amount (₱)</label><input id="f-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></div>
+        <div class="field"><label>Category</label><select id="f-category">${catOptions}</select></div>
+        <div class="field"><label>Payment Method</label><select id="f-payment">${pmOptions}</select></div>
+        <div class="field"><label>Money Source</label><select id="f-source">${srcOptions}</select></div>
+        <div class="field"><label>Notes (optional)</label><input id="f-notes" type="text" placeholder="Add notes..."></div>
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">Add Expense</button>
+        </div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+  $('#modal-save').onclick = submitExpense;
+}
+
+async function submitExpense(){
+  const amount = parseFloat($('#f-amount').value);
+  const category = $('#f-category').value;
+  const paymentMethod = $('#f-payment').value;
+  const sourceId = $('#f-source').value;
+  const notes = $('#f-notes').value.trim();
+  const errEl = $('#modal-err');
+
+  if(!amount || amount<=0){ errEl.textContent='Enter a valid amount.'; return; }
+  const source = profile.moneySources.find(s=>s.id===sourceId);
+  if(!category || !paymentMethod || !source){ errEl.textContent='Please fill in all required fields.'; return; }
+
+  $('#modal-save').textContent = 'Saving…';
+  $('#modal-save').disabled = true;
+  try{
+    const dateIso = new Date().toISOString();
+    await addDoc(collection(db,'people',personId,'expenses'), {
+      amount, category, paymentMethod, moneySource: source.name, notes, date: dateIso, createdAt: Date.now()
+    });
+    const updatedSources = profile.moneySources.map(s => s.id===sourceId ? {...s, balance: Number(s.balance)-amount} : s);
+    await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+    await addDoc(collection(db,'sharedExpenses'), {
+      ownerId: personId, ownerName: profile.displayName, amount, category, date: dateIso, createdAt: Date.now()
+    });
+    closeModal();
+    toast('Expense added');
+  }catch(err){
+    console.error(err);
+    errEl.textContent = 'Could not save — check your connection and try again.';
+    $('#modal-save').textContent = 'Add Expense';
+    $('#modal-save').disabled = false;
+  }
+}
+
+/* ---------------- modal: settings ---------------- */
+function openSettingsModal(){
+  renderSettingsModal();
+}
+
+function renderSettingsModal(){
+  const b = profile.budgets;
+  const catChips = profile.categories.map(c=>`
+    <span class="chip">${esc(c)}<button data-remove-cat="${esc(c)}">&times;</button></span>`).join('');
+  const sourceCards = profile.moneySources.map(s=>`
+    <div class="source-card">
+      <div class="source-top">
+        <div><div class="name" style="font-weight:600">${esc(s.name)}</div><div class="type">${esc(s.type)}</div></div>
+        <button class="icon-btn" data-remove-src="${esc(s.id)}" title="Remove">&times;</button>
+      </div>
+      <div class="source-edit">
+        <input type="number" step="0.01" value="${s.balance}" data-balance-src="${esc(s.id)}">
+        <button class="btn small" data-save-balance="${esc(s.id)}">Save</button>
+      </div>
+    </div>`).join('');
+
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Settings</h2><button class="x-btn" id="modal-x">&times;</button></div>
+
+        <div class="section-title">Budgets</div>
+        <div class="field"><label>Daily (₱)</label><input id="s-daily" type="number" step="0.01" value="${b.daily}"></div>
+        <div class="field"><label>Weekly (₱)</label><input id="s-weekly" type="number" step="0.01" value="${b.weekly}"></div>
+        <div class="field"><label>Monthly (₱)</label><input id="s-monthly" type="number" step="0.01" value="${b.monthly}"></div>
+        <button class="btn small" id="save-budgets">Save Budgets</button>
+
+        <div class="section-title">Savings</div>
+        <div class="field"><label>Savings (₱)</label><input id="s-savings" type="number" step="0.01" value="${profile.savings}"></div>
+        <button class="btn small" id="save-savings">Save Savings</button>
+
+        <div class="section-title">Categories</div>
+        <div class="chip-row">${catChips}</div>
+        <div class="inline-add"><input id="new-cat" type="text" placeholder="New category"><button class="btn small" id="add-cat">Add</button></div>
+
+        <div class="section-title">Money Sources</div>
+        ${sourceCards}
+        <div class="field" style="margin-top:10px"><label>New source name</label><input id="new-src-name" type="text" placeholder="e.g. Maya"></div>
+        <div class="field"><label>Type</label><select id="new-src-type">${SOURCE_TYPES.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
+        <div class="field"><label>Starting balance (₱)</label><input id="new-src-balance" type="number" step="0.01" value="0"></div>
+        <button class="btn small" id="add-src">Add Money Source</button>
+
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row"><button class="btn" id="modal-done">Done</button></div>
+      </div>
+    </div>`;
+
+  $('#modal-x').onclick = closeModal;
+  $('#modal-done').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+
+  $('#save-budgets').onclick = async ()=>{
+    const daily = parseFloat($('#s-daily').value)||0;
+    const weekly = parseFloat($('#s-weekly').value)||0;
+    const monthly = parseFloat($('#s-monthly').value)||0;
+    await updateDoc(doc(db,'people',personId), { budgets:{daily,weekly,monthly} });
+    toast('Budgets updated');
+  };
+  $('#save-savings').onclick = async ()=>{
+    const savings = parseFloat($('#s-savings').value)||0;
+    await updateDoc(doc(db,'people',personId), { savings });
+    toast('Savings updated');
+  };
+  $('#add-cat').onclick = async ()=>{
+    const val = $('#new-cat').value.trim();
+    if(!val) return;
+    if(profile.categories.includes(val)){ toast('Category already exists'); return; }
+    await updateDoc(doc(db,'people',personId), { categories:[...profile.categories, val] });
+    profile = { ...profile, categories:[...profile.categories, val] };
+    renderSettingsModal();
+  };
+  $('#modal-root').querySelectorAll('[data-remove-cat]').forEach(b=>{
+    b.onclick = async ()=>{
+      const val = b.dataset.removeCat;
+      const updated = profile.categories.filter(c=>c!==val);
+      await updateDoc(doc(db,'people',personId), { categories: updated });
+      profile = { ...profile, categories: updated };
+      renderSettingsModal();
+    };
+  });
+  $('#add-src').onclick = async ()=>{
+    const name = $('#new-src-name').value.trim();
+    const type = $('#new-src-type').value;
+    const balance = parseFloat($('#new-src-balance').value)||0;
+    if(!name){ toast('Enter a source name'); return; }
+    const updated = [...profile.moneySources, { id: cryptoId(), name, type, balance }];
+    await updateDoc(doc(db,'people',personId), { moneySources: updated });
+    profile = { ...profile, moneySources: updated };
+    renderSettingsModal();
+  };
+  $('#modal-root').querySelectorAll('[data-remove-src]').forEach(b=>{
+    b.onclick = async ()=>{
+      const id = b.dataset.removeSrc;
+      const updated = profile.moneySources.filter(s=>s.id!==id);
+      await updateDoc(doc(db,'people',personId), { moneySources: updated });
+      profile = { ...profile, moneySources: updated };
+      renderSettingsModal();
+    };
+  });
+  $('#modal-root').querySelectorAll('[data-save-balance]').forEach(b=>{
+    b.onclick = async ()=>{
+      const id = b.dataset.saveBalance;
+      const input = $('#modal-root').querySelector(`[data-balance-src="${id}"]`);
+      const newBal = parseFloat(input.value)||0;
+      const updated = profile.moneySources.map(s=>s.id===id?{...s,balance:newBal}:s);
+      await updateDoc(doc(db,'people',personId), { moneySources: updated });
+      profile = { ...profile, moneySources: updated };
+      toast('Balance updated');
+    };
+  });
+}
+
+/* ---------------- root render ---------------- */
+function render(){
+  if(!personId || !profile){ renderGate(); return; }
+  renderApp();
+}
+function renderRoot(){ render(); }
+
+/* ---------------- boot ---------------- */
+(async function boot(){
+  if(personId){
+    const snap = await getDoc(doc(db,'people',personId));
+    if(snap.exists()){
+      profile = snap.data();
+      subscribeAll();
+      render();
+      return;
+    }
+    localStorage.removeItem('ledger_person_id');
+    personId = null;
+  }
+  render();
+})();
+</script>
+</body>
+</html>
