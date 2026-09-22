@@ -541,8 +541,10 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
       <div class="mono ledger-amt" style="color:var(--peso)">+${peso(d.amount)}</div>
     </div>`).join('');
 
-  const totalReceivable = receivables.reduce((s,r)=>s+Number(r.balance||0),0);
-  const loanRows = receivables.map(r=>{
+  const activeReceivables = receivables.filter(r=>!r.archived);
+  const archivedReceivables = receivables.filter(r=>r.archived);
+  const totalReceivable = activeReceivables.reduce((s,r)=>s+Number(r.balance||0),0);
+  const loanCard = (r, archived) => {
     const total = Number(r.monthlyAmount)*Number(r.termMonths);
     const paidSoFar = Math.max(0, total - Number(r.balance));
     const pct = total>0 ? Math.min(100, (paidSoFar/total)*100) : 0;
@@ -555,13 +557,23 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
       </div>
       <div class="credit-gauge-track"><div class="credit-gauge-fill" style="width:${pct}%; background:var(--peso)"></div></div>
       <div class="loan-figures"><span>${peso(paidSoFar)} paid</span><span>of ${peso(total)} · ${peso(r.monthlyAmount)}/mo</span></div>
-      ${!isPaidOff ? `
+      ${!archived && !isPaidOff ? `
       <div class="loan-actions">
         <button class="pay-btn" data-log-payment="${esc(r.id)}">Log Payment</button>
         <button class="pay-btn secondary" data-bill-installment="${esc(r.id)}">Bill Next Month</button>
       </div>` : ''}
+      ${!archived && isPaidOff ? `
+      <div class="loan-actions">
+        <button class="pay-btn" data-archive-receivable="${esc(r.id)}">Archive</button>
+      </div>` : ''}
+      ${archived ? `
+      <div class="loan-actions">
+        <button class="pay-btn" data-unarchive-receivable="${esc(r.id)}">Restore</button>
+      </div>` : ''}
     </div>`;
-  }).join('') || `<div class="empty-note">No receivables yet. Add one in Settings.</div>`;
+  };
+  const loanRows = activeReceivables.map(r=>loanCard(r,false)).join('') || `<div class="empty-note">No receivables yet. Add one in Settings.</div>`;
+  const archivedLoanRows = archivedReceivables.map(r=>loanCard(r,true)).join('');
 
   const expenseRows = totals.filtered.length ? totals.filtered.map(e=>`
     <div class="ledger-row">
@@ -601,7 +613,9 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
 
     ${depositRows ? `<div class="card"><h3>Recent Deposits</h3>${depositRows}</div>` : ''}
 
-    ${receivables.length ? `<div class="card"><div class="row-between"><h3>Receivables</h3><span class="mono" style="font-weight:600;color:var(--brick)">${peso(totalReceivable)}</span></div>${loanRows}</div>` : ''}
+    ${activeReceivables.length ? `<div class="card"><div class="row-between"><h3>Receivables</h3><span class="mono" style="font-weight:600;color:var(--brick)">${peso(totalReceivable)}</span></div>${loanRows}</div>` : ''}
+
+    ${archivedLoanRows ? `<div class="card"><h3>Archived Receivables</h3>${archivedLoanRows}</div>` : ''}
 
     <div class="card">
       <h3>Expenses (${tfLabel})</h3>
@@ -711,6 +725,24 @@ function wireTrackerOrSharedEvents(){
   });
   document.querySelectorAll('[data-bill-installment]').forEach(b=>{
     b.onclick = ()=>billNextInstallment(b.dataset.billInstallment);
+  });
+  document.querySelectorAll('[data-archive-receivable]').forEach(b=>{
+    b.onclick = async ()=>{
+      b.disabled = true;
+      try{
+        await updateDoc(doc(db,'people',personId,'receivables',b.dataset.archiveReceivable), { archived:true });
+        toast('Archived');
+      }catch(err){ console.error(err); toast('Could not update — try again'); b.disabled=false; }
+    };
+  });
+  document.querySelectorAll('[data-unarchive-receivable]').forEach(b=>{
+    b.onclick = async ()=>{
+      b.disabled = true;
+      try{
+        await updateDoc(doc(db,'people',personId,'receivables',b.dataset.unarchiveReceivable), { archived:false });
+        toast('Restored');
+      }catch(err){ console.error(err); toast('Could not update — try again'); b.disabled=false; }
+    };
   });
 }
 
