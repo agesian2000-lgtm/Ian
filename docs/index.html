@@ -62,6 +62,9 @@
   }
   .field input:focus, .field select:focus{outline:2px solid var(--peso); outline-offset:1px;}
   .field-hint{font-size:12px; color:var(--muted); margin-top:6px; line-height:1.4;}
+  .check-row{display:flex; align-items:center; gap:9px; margin-bottom:16px;}
+  .check-row input[type="checkbox"]{width:18px; height:18px; accent-color:var(--peso); flex-shrink:0; background:none; border:none; padding:0;}
+  .check-row label{margin:0; text-transform:none; font-weight:600; font-size:14px; letter-spacing:0; color:var(--ink);}
   .btn{
     display:inline-flex; align-items:center; justify-content:center; gap:6px;
     height:44px; padding:0 20px; border-radius:9px; border:none;
@@ -175,7 +178,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import {
-  getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc,
+  getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, collection, addDoc,
   query, orderBy, limit, onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
@@ -252,24 +255,26 @@ let profile = null;
 let myExpenses = [];
 let sharedExpenses = [];
 let cardPayments = [];
+let payables = [];
 let timeFrame = localStorage.getItem('ledger_timeframe') || 'daily';
 let activeTab = 'tracker';
 let gateStep = 'name'; // name | pin-existing | pin-new
 let gateName = '';
-let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null;
+let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null;
 
 function teardownSubs(){
   if(unsubProfile) unsubProfile();
   if(unsubMine) unsubMine();
   if(unsubShared) unsubShared();
   if(unsubPayments) unsubPayments();
-  unsubProfile=unsubMine=unsubShared=unsubPayments=null;
+  if(unsubPayables) unsubPayables();
+  unsubProfile=unsubMine=unsubShared=unsubPayments=unsubPayables=null;
 }
 
 function logout(){
   teardownSubs();
   localStorage.removeItem('ledger_person_id');
-  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[];
+  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[];
   gateStep='name'; gateName='';
   renderRoot();
 }
@@ -297,6 +302,12 @@ function subscribeAll(){
   const paymentsQ = query(collection(db,'people',personId,'payments'), orderBy('createdAt','desc'), limit(50));
   unsubPayments = onSnapshot(paymentsQ, snap=>{
     cardPayments = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, err=>console.error(err));
+
+  const payablesQ = query(collection(db,'payables'), orderBy('createdAt','desc'), limit(200));
+  unsubPayables = onSnapshot(payablesQ, snap=>{
+    payables = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
   }, err=>console.error(err));
 }
@@ -554,11 +565,31 @@ function sharedTabHtml(tfLabel){
       <div class="mono ledger-amt">-${peso(e.amount)}</div>
     </div>`).join('') || `<div class="empty-note">No shared activity yet.</div>`;
 
+  const openPayables = payables.filter(p=>!p.settled);
+  const settledPayables = payables.filter(p=>p.settled).slice(0,10);
+  const payableRow = p => `
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${esc(p.toName)} owes ${esc(p.fromName)}</div>
+        <div class="ledger-meta">${esc(p.category)} · ${new Date(p.date).toLocaleDateString('en-PH',{month:'short',day:'numeric'})}</div>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+        <div class="mono ledger-amt" style="color:${p.settled?'var(--muted)':'var(--brick)'}">${peso(p.amount)}</div>
+        ${p.settled ? `<span class="tag">Settled</span>` : `<button class="pay-btn" data-settle-payable="${esc(p.id)}">Mark settled</button>`}
+      </div>
+    </div>`;
+  const payablesHtml = openPayables.length
+    ? openPayables.map(payableRow).join('')
+    : `<div class="empty-note">No open payables. Add an expense and check "Someone else owes part of this" to split one.</div>`;
+  const settledHtml = settledPayables.length ? settledPayables.map(payableRow).join('') : '';
+
   return `
     <div class="stat-grid">
       <div class="stat-tile"><div class="label">Total (${tfLabel})</div><div class="mono value">${peso(total)}</div></div>
       <div class="stat-tile"><div class="label">Contributors</div><div class="mono value">${people.size}</div></div>
     </div>
+    <div class="card"><h3>Payables</h3>${payablesHtml}</div>
+    ${settledHtml ? `<div class="card"><h3>Recently Settled</h3>${settledHtml}</div>` : ''}
     <div class="card"><h3>By Category</h3>${barRows(catEntries, maxCat, 'var(--ballpen)')}</div>
     <div class="card"><h3>By Person</h3>${barRows(personEntries, maxPerson, 'var(--peso)')}</div>
     <div class="card"><h3>Recent Activity</h3>${feed}</div>
@@ -572,6 +603,19 @@ function wireTrackerOrSharedEvents(){
   if(settingsBtn) settingsBtn.onclick = openSettingsModal;
   document.querySelectorAll('[data-pay-card]').forEach(b=>{
     b.onclick = ()=>openPayCardModal(b.dataset.payCard);
+  });
+  document.querySelectorAll('[data-settle-payable]').forEach(b=>{
+    b.onclick = async ()=>{
+      b.disabled = true;
+      try{
+        await updateDoc(doc(db,'payables',b.dataset.settlePayable), { settled:true, settledAt: new Date().toISOString() });
+        toast('Marked as settled');
+      }catch(err){
+        console.error(err);
+        toast('Could not update — try again');
+        b.disabled = false;
+      }
+    };
   });
 }
 
@@ -646,10 +690,16 @@ async function submitCardPayment(cardId){
 /* ---------------- modal: add expense ---------------- */
 function closeModal(){ $('#modal-root').innerHTML = ''; }
 
-function openAddExpenseModal(){
+async function openAddExpenseModal(){
   const catOptions = profile.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
   const pmOptions = PAYMENT_METHODS.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('');
   const srcOptions = profile.moneySources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('');
+
+  const peopleSnap = await getDocs(collection(db,'people'));
+  const otherPeople = peopleSnap.docs
+    .filter(d=>d.id!==personId)
+    .map(d=>({id:d.id, name:d.data().displayName}));
+  const splitOptions = otherPeople.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
 
   $('#modal-root').innerHTML = `
     <div class="modal-overlay" id="modal-overlay">
@@ -661,6 +711,18 @@ function openAddExpenseModal(){
         <div class="field"><label>Payment Method</label><select id="f-payment">${pmOptions}</select></div>
         <div class="field"><label>Money Source</label><select id="f-source">${srcOptions}</select></div>
         <div class="field"><label>Notes (optional)</label><input id="f-notes" type="text" placeholder="Add notes..."></div>
+
+        ${otherPeople.length ? `
+        <div class="check-row">
+          <input type="checkbox" id="f-split-toggle">
+          <label for="f-split-toggle">Someone else owes part of this</label>
+        </div>
+        <div id="f-split-fields" style="display:none">
+          <div class="field"><label>Who owes</label><select id="f-split-who">${splitOptions}</select></div>
+          <div class="field"><label>Amount they owe (₱)</label><input id="f-split-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></div>
+          <div class="field-hint">This shows up on the Shared Report as a payable until marked settled.</div>
+        </div>` : ''}
+
         <div class="err-text" id="modal-err"></div>
         <div class="btn-row">
           <button class="btn ghost" id="modal-cancel">Cancel</button>
@@ -672,6 +734,17 @@ function openAddExpenseModal(){
   $('#modal-cancel').onclick = closeModal;
   $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
   $('#modal-save').onclick = submitExpense;
+  const splitToggle = $('#f-split-toggle');
+  if(splitToggle){
+    splitToggle.onchange = ()=>{ $('#f-split-fields').style.display = splitToggle.checked ? '' : 'none'; };
+  }
+  const amountInput = $('#f-amount');
+  amountInput.addEventListener('input', ()=>{
+    const splitAmt = $('#f-split-amount');
+    if(splitAmt && splitToggle && splitToggle.checked && !splitAmt.dataset.touched) splitAmt.value = amountInput.value;
+  });
+  const splitAmountInput = $('#f-split-amount');
+  if(splitAmountInput) splitAmountInput.addEventListener('input', ()=>{ splitAmountInput.dataset.touched = '1'; });
 }
 
 async function submitExpense(){
@@ -686,6 +759,17 @@ async function submitExpense(){
   const source = profile.moneySources.find(s=>s.id===sourceId);
   if(!category || !paymentMethod || !source){ errEl.textContent='Please fill in all required fields.'; return; }
 
+  const splitToggle = $('#f-split-toggle');
+  const isSplit = splitToggle && splitToggle.checked;
+  let splitWhoId = null, splitWhoName = null, splitAmount = 0;
+  if(isSplit){
+    splitWhoId = $('#f-split-who').value;
+    splitAmount = parseFloat($('#f-split-amount').value);
+    if(!splitWhoId){ errEl.textContent='Choose who owes part of this.'; return; }
+    if(!splitAmount || splitAmount<=0){ errEl.textContent='Enter a valid amount owed.'; return; }
+    splitWhoName = $('#f-split-who').selectedOptions[0].textContent;
+  }
+
   $('#modal-save').textContent = 'Saving…';
   $('#modal-save').disabled = true;
   try{
@@ -698,6 +782,13 @@ async function submitExpense(){
     await addDoc(collection(db,'sharedExpenses'), {
       ownerId: personId, ownerName: profile.displayName, amount, category, date: dateIso, createdAt: Date.now()
     });
+    if(isSplit){
+      await addDoc(collection(db,'payables'), {
+        fromId: personId, fromName: profile.displayName,
+        toId: splitWhoId, toName: splitWhoName,
+        amount: splitAmount, category, date: dateIso, createdAt: Date.now(), settled: false
+      });
+    }
     closeModal();
     toast('Expense added');
   }catch(err){
