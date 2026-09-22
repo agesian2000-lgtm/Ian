@@ -104,6 +104,12 @@
   .balance-row:last-child{border-bottom:none;}
   .balance-row .name{font-weight:600; font-size:14px;}
   .balance-row .type{font-size:12px; color:var(--muted);}
+  .balance-row.credit{flex-direction:column; align-items:stretch; gap:8px;}
+  .balance-row.credit .credit-top{display:flex; justify-content:space-between; align-items:center;}
+  .credit-gauge-track{height:6px; background:var(--line); border-radius:4px; overflow:hidden;}
+  .credit-gauge-fill{height:100%; border-radius:4px;}
+  .credit-figures{display:flex; justify-content:space-between; font-size:11.5px; color:var(--muted);}
+  .pay-btn{background:var(--ballpen-soft); color:var(--ballpen); border:none; border-radius:7px; height:30px; padding:0 12px; font-size:12.5px; font-weight:600; align-self:flex-start;}
 
   .ledger-row{display:flex; justify-content:space-between; align-items:flex-start; padding:12px 0; border-bottom:1px solid var(--line); gap:10px;}
   .ledger-row:last-child{border-bottom:none;}
@@ -233,7 +239,7 @@ function defaultProfile(displayName, pinHash){
     moneySources: [
       { id: cryptoId(), name:'GCash', type:'E-Wallet (GCash/PayMaya)', balance:5000 },
       { id: cryptoId(), name:'BDO Debit', type:'Debit Card', balance:25000 },
-      { id: cryptoId(), name:'BDO Credit', type:'Credit Card', balance:50000 },
+      { id: cryptoId(), name:'BDO Credit', type:'Credit Card', balance:50000, creditLimit:50000 },
     ],
     savings: 0,
     createdAt: Date.now(),
@@ -245,23 +251,25 @@ let personId = localStorage.getItem('ledger_person_id') || null;
 let profile = null;
 let myExpenses = [];
 let sharedExpenses = [];
+let cardPayments = [];
 let timeFrame = localStorage.getItem('ledger_timeframe') || 'daily';
 let activeTab = 'tracker';
 let gateStep = 'name'; // name | pin-existing | pin-new
 let gateName = '';
-let unsubProfile=null, unsubMine=null, unsubShared=null;
+let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null;
 
 function teardownSubs(){
   if(unsubProfile) unsubProfile();
   if(unsubMine) unsubMine();
   if(unsubShared) unsubShared();
-  unsubProfile=unsubMine=unsubShared=null;
+  if(unsubPayments) unsubPayments();
+  unsubProfile=unsubMine=unsubShared=unsubPayments=null;
 }
 
 function logout(){
   teardownSubs();
   localStorage.removeItem('ledger_person_id');
-  personId=null; profile=null; myExpenses=[]; sharedExpenses=[];
+  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[];
   gateStep='name'; gateName='';
   renderRoot();
 }
@@ -283,6 +291,12 @@ function subscribeAll(){
   const sharedQ = query(collection(db,'sharedExpenses'), orderBy('createdAt','desc'), limit(400));
   unsubShared = onSnapshot(sharedQ, snap=>{
     sharedExpenses = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, err=>console.error(err));
+
+  const paymentsQ = query(collection(db,'people',personId,'payments'), orderBy('createdAt','desc'), limit(50));
+  unsubPayments = onSnapshot(paymentsQ, snap=>{
+    cardPayments = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
   }, err=>console.error(err));
 }
@@ -429,10 +443,36 @@ function renderApp(){
 }
 
 function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, tfLabel){
-  const sourcesHtml = profile.moneySources.map(s=>`
+  const sourcesHtml = profile.moneySources.map(s=>{
+    if(s.type==='Credit Card' && Number(s.creditLimit)>0){
+      const used = Math.max(0, Number(s.creditLimit) - Number(s.balance));
+      const usedPct = Math.min(100, (used/Number(s.creditLimit))*100);
+      const gColor = usedPct>90?'var(--brick)':usedPct>70?'var(--amber)':'var(--peso)';
+      return `
+        <div class="balance-row credit">
+          <div class="credit-top">
+            <div><div class="name">${esc(s.name)}</div><div class="type">${esc(s.type)}</div></div>
+            <div class="mono ledger-amt" style="color:var(--peso)">${peso(s.balance)}</div>
+          </div>
+          <div class="credit-gauge-track"><div class="credit-gauge-fill" style="width:${usedPct}%; background:${gColor}"></div></div>
+          <div class="credit-figures"><span>${peso(s.balance)} available</span><span>of ${peso(s.creditLimit)} limit</span></div>
+          <button class="pay-btn" data-pay-card="${esc(s.id)}">Pay this card</button>
+        </div>`;
+    }
+    return `
     <div class="balance-row">
       <div><div class="name">${esc(s.name)}</div><div class="type">${esc(s.type)}</div></div>
       <div class="mono ledger-amt" style="color:${s.balance<0?'var(--brick)':'var(--peso)'}">${peso(s.balance)}</div>
+    </div>`;
+  }).join('');
+
+  const paymentRows = cardPayments.slice(0,10).map(p=>`
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">Paid ${esc(p.cardName)}</div>
+        <div class="ledger-meta">${new Date(p.date).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})} · from ${esc(p.from)}</div>
+      </div>
+      <div class="mono ledger-amt" style="color:var(--peso)">+${peso(p.amount)}</div>
     </div>`).join('');
 
   const expenseRows = totals.filtered.length ? totals.filtered.map(e=>`
@@ -462,6 +502,8 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
       <div class="row-between"><h3>Account Balances</h3><span class="mono" style="font-weight:600">${peso(totalBalance)}</span></div>
       <div class="balance-list">${sourcesHtml}</div>
     </div>
+
+    ${paymentRows ? `<div class="card"><h3>Recent Card Payments</h3>${paymentRows}</div>` : ''}
 
     <button class="btn" id="open-add-expense" style="margin-bottom:16px">+ Add Expense</button>
 
@@ -528,6 +570,77 @@ function wireTrackerOrSharedEvents(){
   if(addBtn) addBtn.onclick = openAddExpenseModal;
   const settingsBtn = $('#open-settings');
   if(settingsBtn) settingsBtn.onclick = openSettingsModal;
+  document.querySelectorAll('[data-pay-card]').forEach(b=>{
+    b.onclick = ()=>openPayCardModal(b.dataset.payCard);
+  });
+}
+
+/* ---------------- modal: pay credit card ---------------- */
+function openPayCardModal(cardId){
+  const card = profile.moneySources.find(s=>s.id===cardId);
+  if(!card) return;
+  const otherSources = profile.moneySources.filter(s=>s.id!==cardId);
+  const fromOptions = otherSources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('')
+    + `<option value="external">External / not tracked in app</option>`;
+  const limit = Number(card.creditLimit)||0;
+  const room = Math.max(0, limit - Number(card.balance));
+
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Pay ${esc(card.name)}</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">${peso(card.balance)} available of ${peso(limit)} limit. Paying frees up available credit.</div>
+        <div class="field"><label>Payment amount (₱)</label><input id="p-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></div>
+        <div class="field"><label>Paid from</label><select id="p-from">${fromOptions}</select></div>
+        <div class="field-hint">Choosing another account here also deducts the payment from that balance. Pick "External" if you paid from somewhere not tracked in this app.</div>
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">Record Payment</button>
+        </div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+  $('#modal-save').onclick = ()=>submitCardPayment(cardId);
+}
+
+async function submitCardPayment(cardId){
+  const amount = parseFloat($('#p-amount').value);
+  const fromId = $('#p-from').value;
+  const errEl = $('#modal-err');
+  if(!amount || amount<=0){ errEl.textContent='Enter a valid payment amount.'; return; }
+
+  const card = profile.moneySources.find(s=>s.id===cardId);
+  if(!card){ errEl.textContent='Card not found.'; return; }
+  const fromSource = fromId!=='external' ? profile.moneySources.find(s=>s.id===fromId) : null;
+  if(fromId!=='external' && !fromSource){ errEl.textContent='Select where this payment came from.'; return; }
+
+  $('#modal-save').textContent = 'Saving…';
+  $('#modal-save').disabled = true;
+  try{
+    const limit = Number(card.creditLimit)||Infinity;
+    const newCardBalance = Math.min(Number(card.balance)+amount, limit);
+    const updatedSources = profile.moneySources.map(s=>{
+      if(s.id===cardId) return {...s, balance:newCardBalance};
+      if(fromSource && s.id===fromSource.id) return {...s, balance:Number(s.balance)-amount};
+      return s;
+    });
+    await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+    await addDoc(collection(db,'people',personId,'payments'), {
+      cardId, cardName: card.name, amount,
+      from: fromSource ? fromSource.name : 'External',
+      date: new Date().toISOString(), createdAt: Date.now()
+    });
+    closeModal();
+    toast('Payment recorded');
+  }catch(err){
+    console.error(err);
+    errEl.textContent = 'Could not save — check your connection and try again.';
+    $('#modal-save').textContent = 'Record Payment';
+    $('#modal-save').disabled = false;
+  }
 }
 
 /* ---------------- modal: add expense ---------------- */
@@ -604,17 +717,21 @@ function renderSettingsModal(){
   const b = profile.budgets;
   const catChips = profile.categories.map(c=>`
     <span class="chip">${esc(c)}<button data-remove-cat="${esc(c)}">&times;</button></span>`).join('');
-  const sourceCards = profile.moneySources.map(s=>`
+  const sourceCards = profile.moneySources.map(s=>{
+    const isCredit = s.type==='Credit Card';
+    return `
     <div class="source-card">
       <div class="source-top">
         <div><div class="name" style="font-weight:600">${esc(s.name)}</div><div class="type">${esc(s.type)}</div></div>
         <button class="icon-btn" data-remove-src="${esc(s.id)}" title="Remove">&times;</button>
       </div>
       <div class="source-edit">
-        <input type="number" step="0.01" value="${s.balance}" data-balance-src="${esc(s.id)}">
-        <button class="btn small" data-save-balance="${esc(s.id)}">Save</button>
+        <div style="flex:1"><label style="font-size:11px;color:var(--muted)">${isCredit?'Available credit':'Balance'} (₱)</label><input type="number" step="0.01" value="${s.balance}" data-balance-src="${esc(s.id)}"></div>
+        ${isCredit ? `<div style="flex:1"><label style="font-size:11px;color:var(--muted)">Credit limit (₱)</label><input type="number" step="0.01" value="${s.creditLimit||0}" data-limit-src="${esc(s.id)}"></div>` : ''}
       </div>
-    </div>`).join('');
+      <button class="btn small" data-save-balance="${esc(s.id)}" style="margin-top:8px">Save</button>
+    </div>`;
+  }).join('');
 
   $('#modal-root').innerHTML = `
     <div class="modal-overlay" id="modal-overlay">
@@ -639,7 +756,8 @@ function renderSettingsModal(){
         ${sourceCards}
         <div class="field" style="margin-top:10px"><label>New source name</label><input id="new-src-name" type="text" placeholder="e.g. Maya"></div>
         <div class="field"><label>Type</label><select id="new-src-type">${SOURCE_TYPES.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
-        <div class="field"><label>Starting balance (₱)</label><input id="new-src-balance" type="number" step="0.01" value="0"></div>
+        <div class="field"><label id="new-src-balance-label">Starting balance (₱)</label><input id="new-src-balance" type="number" step="0.01" value="0"></div>
+        <div class="field" id="new-src-limit-field" style="display:none"><label>Credit limit (₱)</label><input id="new-src-limit" type="number" step="0.01" value="0"></div>
         <button class="btn small" id="add-src">Add Money Source</button>
 
         <div class="err-text" id="modal-err"></div>
@@ -680,12 +798,22 @@ function renderSettingsModal(){
       renderSettingsModal();
     };
   });
+  const toggleLimitField = ()=>{
+    const isCredit = $('#new-src-type').value === 'Credit Card';
+    $('#new-src-limit-field').style.display = isCredit ? '' : 'none';
+    $('#new-src-balance-label').textContent = isCredit ? 'Available credit (₱)' : 'Starting balance (₱)';
+  };
+  $('#new-src-type').onchange = toggleLimitField;
+  toggleLimitField();
+
   $('#add-src').onclick = async ()=>{
     const name = $('#new-src-name').value.trim();
     const type = $('#new-src-type').value;
     const balance = parseFloat($('#new-src-balance').value)||0;
     if(!name){ toast('Enter a source name'); return; }
-    const updated = [...profile.moneySources, { id: cryptoId(), name, type, balance }];
+    const newSource = { id: cryptoId(), name, type, balance };
+    if(type==='Credit Card') newSource.creditLimit = parseFloat($('#new-src-limit').value)||0;
+    const updated = [...profile.moneySources, newSource];
     await updateDoc(doc(db,'people',personId), { moneySources: updated });
     profile = { ...profile, moneySources: updated };
     renderSettingsModal();
@@ -702,12 +830,18 @@ function renderSettingsModal(){
   $('#modal-root').querySelectorAll('[data-save-balance]').forEach(b=>{
     b.onclick = async ()=>{
       const id = b.dataset.saveBalance;
-      const input = $('#modal-root').querySelector(`[data-balance-src="${id}"]`);
-      const newBal = parseFloat(input.value)||0;
-      const updated = profile.moneySources.map(s=>s.id===id?{...s,balance:newBal}:s);
+      const balInput = $('#modal-root').querySelector(`[data-balance-src="${id}"]`);
+      const limitInput = $('#modal-root').querySelector(`[data-limit-src="${id}"]`);
+      const newBal = parseFloat(balInput.value)||0;
+      const updated = profile.moneySources.map(s=>{
+        if(s.id!==id) return s;
+        const next = {...s, balance:newBal};
+        if(limitInput) next.creditLimit = parseFloat(limitInput.value)||0;
+        return next;
+      });
       await updateDoc(doc(db,'people',personId), { moneySources: updated });
       profile = { ...profile, moneySources: updated };
-      toast('Balance updated');
+      toast('Updated');
     };
   });
 }
