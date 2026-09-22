@@ -74,6 +74,9 @@
   .btn.ghost{background:transparent; color:var(--ink); border:1px solid var(--line);}
   .btn.small{height:36px; padding:0 14px; font-size:13px; width:auto;}
   .btn.danger{background:var(--brick);}
+  .btn.outline-peso{background:transparent; color:var(--peso); border:1.5px solid var(--peso);}
+  .btn-pair{display:flex; gap:10px; margin-bottom:16px;}
+  .btn-pair .btn{width:auto; flex:1;}
   .err-text{color:var(--brick); font-size:13px; margin-top:10px; min-height:16px;}
   .back-link{background:none; border:none; color:var(--ballpen); font-size:13px; padding:0; margin-bottom:16px; font-weight:600;}
 
@@ -256,11 +259,12 @@ let myExpenses = [];
 let sharedExpenses = [];
 let cardPayments = [];
 let payables = [];
+let deposits = [];
 let timeFrame = localStorage.getItem('ledger_timeframe') || 'daily';
 let activeTab = 'tracker';
 let gateStep = 'name'; // name | pin-existing | pin-new
 let gateName = '';
-let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null;
+let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null, unsubDeposits=null;
 
 function teardownSubs(){
   if(unsubProfile) unsubProfile();
@@ -268,13 +272,14 @@ function teardownSubs(){
   if(unsubShared) unsubShared();
   if(unsubPayments) unsubPayments();
   if(unsubPayables) unsubPayables();
-  unsubProfile=unsubMine=unsubShared=unsubPayments=unsubPayables=null;
+  if(unsubDeposits) unsubDeposits();
+  unsubProfile=unsubMine=unsubShared=unsubPayments=unsubPayables=unsubDeposits=null;
 }
 
 function logout(){
   teardownSubs();
   localStorage.removeItem('ledger_person_id');
-  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[];
+  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[]; deposits=[];
   gateStep='name'; gateName='';
   renderRoot();
 }
@@ -308,6 +313,12 @@ function subscribeAll(){
   const payablesQ = query(collection(db,'payables'), orderBy('createdAt','desc'), limit(200));
   unsubPayables = onSnapshot(payablesQ, snap=>{
     payables = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, err=>console.error(err));
+
+  const depositsQ = query(collection(db,'people',personId,'deposits'), orderBy('createdAt','desc'), limit(50));
+  unsubDeposits = onSnapshot(depositsQ, snap=>{
+    deposits = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
   }, err=>console.error(err));
 }
@@ -486,6 +497,15 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
       <div class="mono ledger-amt" style="color:var(--peso)">+${peso(p.amount)}</div>
     </div>`).join('');
 
+  const depositRows = deposits.slice(0,10).map(d=>`
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${esc(d.sourceName)}</div>
+        <div class="ledger-meta">${new Date(d.date).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}${d.note ? ' · ' + esc(d.note) : ''}</div>
+      </div>
+      <div class="mono ledger-amt" style="color:var(--peso)">+${peso(d.amount)}</div>
+    </div>`).join('');
+
   const expenseRows = totals.filtered.length ? totals.filtered.map(e=>`
     <div class="ledger-row">
       <div class="ledger-main">
@@ -516,7 +536,12 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
 
     ${paymentRows ? `<div class="card"><h3>Recent Card Payments</h3>${paymentRows}</div>` : ''}
 
-    <button class="btn" id="open-add-expense" style="margin-bottom:16px">+ Add Expense</button>
+    ${depositRows ? `<div class="card"><h3>Recent Deposits</h3>${depositRows}</div>` : ''}
+
+    <div class="btn-pair">
+      <button class="btn" id="open-add-expense">+ Add Expense</button>
+      <button class="btn outline-peso" id="open-deposit">+ Deposit</button>
+    </div>
 
     <div class="card">
       <h3>Expenses (${tfLabel})</h3>
@@ -599,6 +624,8 @@ function sharedTabHtml(tfLabel){
 function wireTrackerOrSharedEvents(){
   const addBtn = $('#open-add-expense');
   if(addBtn) addBtn.onclick = openAddExpenseModal;
+  const depositBtn = $('#open-deposit');
+  if(depositBtn) depositBtn.onclick = openDepositModal;
   const settingsBtn = $('#open-settings');
   if(settingsBtn) settingsBtn.onclick = openSettingsModal;
   document.querySelectorAll('[data-pay-card]').forEach(b=>{
@@ -683,6 +710,60 @@ async function submitCardPayment(cardId){
     console.error(err);
     errEl.textContent = 'Could not save — check your connection and try again.';
     $('#modal-save').textContent = 'Record Payment';
+    $('#modal-save').disabled = false;
+  }
+}
+
+/* ---------------- modal: deposit ---------------- */
+function openDepositModal(){
+  const srcOptions = profile.moneySources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('');
+
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Deposit</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">Add money into one of your accounts — salary, cash in, a refund, etc.</div>
+        <div class="field"><label>Amount (₱)</label><input id="d-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></div>
+        <div class="field"><label>Into</label><select id="d-source">${srcOptions}</select></div>
+        <div class="field"><label>Note (optional)</label><input id="d-note" type="text" placeholder="e.g. Salary"></div>
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">Add Deposit</button>
+        </div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+  $('#modal-save').onclick = submitDeposit;
+}
+
+async function submitDeposit(){
+  const amount = parseFloat($('#d-amount').value);
+  const sourceId = $('#d-source').value;
+  const note = $('#d-note').value.trim();
+  const errEl = $('#modal-err');
+
+  if(!amount || amount<=0){ errEl.textContent='Enter a valid amount.'; return; }
+  const source = profile.moneySources.find(s=>s.id===sourceId);
+  if(!source){ errEl.textContent='Select an account.'; return; }
+
+  $('#modal-save').textContent = 'Saving…';
+  $('#modal-save').disabled = true;
+  try{
+    const dateIso = new Date().toISOString();
+    const updatedSources = profile.moneySources.map(s => s.id===sourceId ? {...s, balance: Number(s.balance)+amount} : s);
+    await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+    await addDoc(collection(db,'people',personId,'deposits'), {
+      sourceId, sourceName: source.name, amount, note, date: dateIso, createdAt: Date.now()
+    });
+    closeModal();
+    toast('Deposit added');
+  }catch(err){
+    console.error(err);
+    errEl.textContent = 'Could not save — check your connection and try again.';
+    $('#modal-save').textContent = 'Add Deposit';
     $('#modal-save').disabled = false;
   }
 }
