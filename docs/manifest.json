@@ -1,0 +1,12 @@
+{
+  "name": "Ledger — Expense Tracker",
+  "short_name": "Ledger",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0F1D18",
+  "theme_color": "#1F6F54",
+  "icons": [
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
