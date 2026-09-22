@@ -481,11 +481,13 @@ function renderApp(){
     </div>
     <div class="tabs">
       <button class="tab ${activeTab==='tracker'?'active':''}" data-tab="tracker">My Tracker</button>
+      <button class="tab ${activeTab==='receivables'?'active':''}" data-tab="receivables">Receivables</button>
       <button class="tab ${activeTab==='shared'?'active':''}" data-tab="shared">Shared Report</button>
     </div>
+    ${activeTab==='tracker' ? `
     <div class="tf-select">
       ${['daily','weekly','monthly'].map(f=>`<button class="tf-btn ${timeFrame===f?'active':''}" data-tf="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
-    </div>
+    </div>` : ''}
     <div id="tab-content"></div>
     <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.</footer>
   `;
@@ -495,7 +497,9 @@ function renderApp(){
   app.querySelectorAll('.tf-btn').forEach(b=>b.onclick=()=>{ timeFrame=b.dataset.tf; localStorage.setItem('ledger_timeframe',timeFrame); render(); });
 
   const content = $('#tab-content');
-  content.innerHTML = activeTab==='tracker' ? trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, tfLabel) : sharedTabHtml(tfLabel);
+  content.innerHTML = activeTab==='tracker' ? trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, tfLabel)
+    : activeTab==='receivables' ? receivablesTabHtml()
+    : sharedTabHtml(tfLabel);
   wireTrackerOrSharedEvents();
 }
 
@@ -541,40 +545,6 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
       <div class="mono ledger-amt" style="color:var(--peso)">+${peso(d.amount)}</div>
     </div>`).join('');
 
-  const activeReceivables = receivables.filter(r=>!r.archived);
-  const archivedReceivables = receivables.filter(r=>r.archived);
-  const totalReceivable = activeReceivables.reduce((s,r)=>s+Number(r.balance||0),0);
-  const loanCard = (r, archived) => {
-    const total = Number(r.monthlyAmount)*Number(r.termMonths);
-    const paidSoFar = Math.max(0, total - Number(r.balance));
-    const pct = total>0 ? Math.min(100, (paidSoFar/total)*100) : 0;
-    const isPaidOff = Number(r.balance) <= 0;
-    return `
-    <div class="loan-card">
-      <div class="loan-top">
-        <div><div class="name" style="font-weight:600">${esc(r.debtorName)}</div><div class="type">${esc(r.item)}</div></div>
-        <div class="mono ledger-amt" style="color:${isPaidOff?'var(--peso)':'var(--brick)'}">${isPaidOff ? 'Paid off' : peso(r.balance)}</div>
-      </div>
-      <div class="credit-gauge-track"><div class="credit-gauge-fill" style="width:${pct}%; background:var(--peso)"></div></div>
-      <div class="loan-figures"><span>${peso(paidSoFar)} paid</span><span>of ${peso(total)} · ${peso(r.monthlyAmount)}/mo</span></div>
-      ${!archived && !isPaidOff ? `
-      <div class="loan-actions">
-        <button class="pay-btn" data-log-payment="${esc(r.id)}">Log Payment</button>
-        <button class="pay-btn secondary" data-bill-installment="${esc(r.id)}">Bill Next Month</button>
-      </div>` : ''}
-      ${!archived && isPaidOff ? `
-      <div class="loan-actions">
-        <button class="pay-btn" data-archive-receivable="${esc(r.id)}">Archive</button>
-      </div>` : ''}
-      ${archived ? `
-      <div class="loan-actions">
-        <button class="pay-btn" data-unarchive-receivable="${esc(r.id)}">Restore</button>
-      </div>` : ''}
-    </div>`;
-  };
-  const loanRows = activeReceivables.map(r=>loanCard(r,false)).join('') || `<div class="empty-note">No receivables yet. Add one in Settings.</div>`;
-  const archivedLoanRows = archivedReceivables.map(r=>loanCard(r,true)).join('');
-
   const expenseRows = totals.filtered.length ? totals.filtered.map(e=>`
     <div class="ledger-row">
       <div class="ledger-main">
@@ -613,10 +583,6 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
 
     ${depositRows ? `<div class="card"><h3>Recent Deposits</h3>${depositRows}</div>` : ''}
 
-    ${activeReceivables.length ? `<div class="card"><div class="row-between"><h3>Receivables</h3><span class="mono" style="font-weight:600;color:var(--brick)">${peso(totalReceivable)}</span></div>${loanRows}</div>` : ''}
-
-    ${archivedLoanRows ? `<div class="card"><h3>Archived Receivables</h3>${archivedLoanRows}</div>` : ''}
-
     <div class="card">
       <h3>Expenses (${tfLabel})</h3>
       ${expenseRows}
@@ -630,6 +596,55 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
     </div>
 
     <button class="btn ghost" id="open-settings" style="margin-top:4px">Settings</button>
+  `;
+}
+
+function renderLoanCard(r, archived){
+  const total = Number(r.monthlyAmount)*Number(r.termMonths);
+  const paidSoFar = Math.max(0, total - Number(r.balance));
+  const pct = total>0 ? Math.min(100, (paidSoFar/total)*100) : 0;
+  const isPaidOff = Number(r.balance) <= 0;
+  return `
+  <div class="loan-card">
+    <div class="loan-top">
+      <div><div class="name" style="font-weight:600">${esc(r.debtorName)}</div><div class="type">${esc(r.item)}</div></div>
+      <div class="mono ledger-amt" style="color:${isPaidOff?'var(--peso)':'var(--brick)'}">${isPaidOff ? 'Paid off' : peso(r.balance)}</div>
+    </div>
+    <div class="credit-gauge-track"><div class="credit-gauge-fill" style="width:${pct}%; background:var(--peso)"></div></div>
+    <div class="loan-figures"><span>${peso(paidSoFar)} paid</span><span>of ${peso(total)} · ${peso(r.monthlyAmount)}/mo</span></div>
+    ${!archived && !isPaidOff ? `
+    <div class="loan-actions">
+      <button class="pay-btn" data-log-payment="${esc(r.id)}">Log Payment</button>
+      <button class="pay-btn secondary" data-bill-installment="${esc(r.id)}">Bill Next Month</button>
+    </div>` : ''}
+    ${!archived && isPaidOff ? `
+    <div class="loan-actions">
+      <button class="pay-btn" data-archive-receivable="${esc(r.id)}">Archive</button>
+    </div>` : ''}
+    ${archived ? `
+    <div class="loan-actions">
+      <button class="pay-btn" data-unarchive-receivable="${esc(r.id)}">Restore</button>
+    </div>` : ''}
+  </div>`;
+}
+
+function receivablesTabHtml(){
+  const activeReceivables = receivables.filter(r=>!r.archived);
+  const archivedReceivables = receivables.filter(r=>r.archived);
+  const totalReceivable = activeReceivables.reduce((s,r)=>s+Number(r.balance||0),0);
+  const loanRows = activeReceivables.map(r=>renderLoanCard(r,false)).join('') || `<div class="empty-note">No receivables yet. Add one below.</div>`;
+  const archivedLoanRows = archivedReceivables.map(r=>renderLoanCard(r,true)).join('');
+
+  return `
+    <div class="stat-grid" style="grid-template-columns:1fr">
+      <div class="stat-tile"><div class="label">Total Receivable</div><div class="mono value" style="color:var(--brick)">${peso(totalReceivable)}</div></div>
+    </div>
+
+    <button class="btn outline-ballpen" id="open-add-receivable" style="margin-bottom:16px">+ Add Receivable</button>
+
+    <div class="card"><h3>Active Loans</h3>${loanRows}</div>
+
+    ${archivedLoanRows ? `<div class="card"><h3>Archived</h3>${archivedLoanRows}</div>` : ''}
   `;
 }
 
@@ -702,6 +717,8 @@ function wireTrackerOrSharedEvents(){
   if(depositBtn) depositBtn.onclick = openDepositModal;
   const payHubBtn = $('#open-pay-hub');
   if(payHubBtn) payHubBtn.onclick = openPayHubModal;
+  const addReceivableBtn = $('#open-add-receivable');
+  if(addReceivableBtn) addReceivableBtn.onclick = openAddReceivableModal;
   const settingsBtn = $('#open-settings');
   if(settingsBtn) settingsBtn.onclick = openSettingsModal;
   document.querySelectorAll('[data-pay-card]').forEach(b=>{
@@ -989,6 +1006,58 @@ async function billNextInstallment(receivableId){
     console.error(err);
     toast('Could not update — try again');
   }
+}
+
+/* ---------------- modal: add receivable ---------------- */
+function openAddReceivableModal(){
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Add Receivable</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">Track money someone owes you for an item they're paying off over time.</div>
+        <div class="field"><label>Debtor name</label><input id="ar-name" type="text" placeholder="e.g. Tita Belen"></div>
+        <div class="field"><label>Item</label><input id="ar-item" type="text" placeholder="e.g. Aircon"></div>
+        <div class="field"><label>Monthly installment (₱)</label><input id="ar-monthly" type="number" step="0.01" value="0"></div>
+        <div class="field"><label>Term (months)</label><input id="ar-term" type="number" step="1" value="12"></div>
+        <div class="field"><label>Start date</label><input id="ar-start" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+        <div class="field"><label>Current balance owed (₱)</label><input id="ar-balance" type="number" step="0.01" value="0"></div>
+        <div class="field-hint">Leave balance at the full loan amount for a brand-new loan, or set it to what's currently still owed.</div>
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">Add Receivable</button>
+        </div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+  $('#modal-save').onclick = async ()=>{
+    const debtorName = $('#ar-name').value.trim();
+    const item = $('#ar-item').value.trim();
+    const monthlyAmount = parseFloat($('#ar-monthly').value)||0;
+    const termMonths = parseInt($('#ar-term').value)||0;
+    const startDate = $('#ar-start').value;
+    const balance = parseFloat($('#ar-balance').value)||0;
+    const errEl = $('#modal-err');
+    if(!debtorName || !item || monthlyAmount<=0 || termMonths<=0 || !startDate){
+      errEl.textContent = 'Please fill in all fields.'; return;
+    }
+    $('#modal-save').textContent = 'Saving…';
+    $('#modal-save').disabled = true;
+    try{
+      await addDoc(collection(db,'people',personId,'receivables'), {
+        debtorName, item, monthlyAmount, termMonths, startDate, balance, createdAt: Date.now()
+      });
+      closeModal();
+      toast('Receivable added');
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'Could not save — try again.';
+      $('#modal-save').textContent = 'Add Receivable';
+      $('#modal-save').disabled = false;
+    }
+  };
 }
 
 /* ---------------- modal: add expense ---------------- */
