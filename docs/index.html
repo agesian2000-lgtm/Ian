@@ -223,7 +223,7 @@ const RECEIVABLES_IMPORT = [
   {debtorName:"Kuya Ichi", item:"Phone", monthlyAmount:2458.00, termMonths:24, startDate:"2026-08-01", balance:48992.00},
   {debtorName:"Dodge", item:"Phone", monthlyAmount:1000.00, termMonths:24, startDate:"2025-05-01", balance:7000.00},
   {debtorName:"Joanne", item:"Phone", monthlyAmount:2583.00, termMonths:24, startDate:"2025-05-01", balance:15498.00},
-  {debtorName:"Kuya", item:"Phone", monthlyAmount:4561.17, termMonths:12, startDate:"2026-09-01", balance:50472.87},
+  {debtorName:"Kuya", item:"Motor", monthlyAmount:4561.17, termMonths:12, startDate:"2026-09-01", balance:50472.87},
 ];
 
 /* ---------------- helpers ---------------- */
@@ -1099,10 +1099,22 @@ function renderSettingsModal(){
   const receivablesListHtml = receivables.map(r=>`
     <div class="source-card">
       <div class="source-top">
-        <div><div class="name" style="font-weight:600">${esc(r.debtorName)}</div><div class="type">${esc(r.item)} · ${peso(r.monthlyAmount)}/mo · ${r.termMonths}mo term</div></div>
+        <div><div class="name" style="font-weight:600">${esc(r.debtorName)} · ${esc(r.item)}</div><div class="type">${r.termMonths}mo term, started ${esc(r.startDate)}</div></div>
         <button class="icon-btn" data-remove-receivable="${esc(r.id)}" title="Remove">&times;</button>
       </div>
-      <div class="ledger-meta" style="margin-top:6px">${peso(r.balance)} currently owed</div>
+      <div class="source-edit">
+        <div style="flex:1"><label style="font-size:11px;color:var(--muted)">Debtor name</label><input type="text" value="${esc(r.debtorName)}" data-rec-name="${esc(r.id)}"></div>
+        <div style="flex:1"><label style="font-size:11px;color:var(--muted)">Item</label><input type="text" value="${esc(r.item)}" data-rec-item="${esc(r.id)}"></div>
+      </div>
+      <div class="source-edit" style="margin-top:8px">
+        <div style="flex:1"><label style="font-size:11px;color:var(--muted)">Monthly (₱)</label><input type="number" step="0.01" value="${r.monthlyAmount}" data-rec-monthly="${esc(r.id)}"></div>
+        <div style="flex:1"><label style="font-size:11px;color:var(--muted)">Term (mo)</label><input type="number" step="1" value="${r.termMonths}" data-rec-term="${esc(r.id)}"></div>
+      </div>
+      <div class="source-edit" style="margin-top:8px">
+        <div style="flex:1"><label style="font-size:11px;color:var(--muted)">Start date</label><input type="date" value="${esc(r.startDate)}" data-rec-start="${esc(r.id)}"></div>
+        <div style="flex:1"><label style="font-size:11px;color:var(--muted)">Balance owed (₱)</label><input type="number" step="0.01" value="${r.balance}" data-rec-balance="${esc(r.id)}"></div>
+      </div>
+      <button class="btn small" data-save-receivable="${esc(r.id)}" style="margin-top:8px">Save</button>
     </div>`).join('') || `<div class="empty-note">No receivables added yet.</div>`;
 
   $('#modal-root').innerHTML = `
@@ -1248,6 +1260,26 @@ function renderSettingsModal(){
     b.onclick = async ()=>{
       await deleteDoc(doc(db,'people',personId,'receivables',b.dataset.removeReceivable));
       toast('Receivable removed');
+      renderSettingsModal();
+    };
+  });
+  $('#modal-root').querySelectorAll('[data-save-receivable]').forEach(b=>{
+    b.onclick = async ()=>{
+      const id = b.dataset.saveReceivable;
+      const root = $('#modal-root');
+      const debtorName = root.querySelector(`[data-rec-name="${id}"]`).value.trim();
+      const item = root.querySelector(`[data-rec-item="${id}"]`).value.trim();
+      const monthlyAmount = parseFloat(root.querySelector(`[data-rec-monthly="${id}"]`).value)||0;
+      const termMonths = parseInt(root.querySelector(`[data-rec-term="${id}"]`).value)||0;
+      const startDate = root.querySelector(`[data-rec-start="${id}"]`).value;
+      const balance = parseFloat(root.querySelector(`[data-rec-balance="${id}"]`).value)||0;
+      if(!debtorName || !item || monthlyAmount<=0 || termMonths<=0 || !startDate){
+        toast('Fill in all receivable fields'); return;
+      }
+      await updateDoc(doc(db,'people',personId,'receivables',id), {
+        debtorName, item, monthlyAmount, termMonths, startDate, balance
+      });
+      toast('Receivable updated');
       renderSettingsModal();
     };
   });
