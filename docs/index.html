@@ -75,8 +75,11 @@
   .btn.small{height:36px; padding:0 14px; font-size:13px; width:auto;}
   .btn.danger{background:var(--brick);}
   .btn.outline-peso{background:transparent; color:var(--peso); border:1.5px solid var(--peso);}
-  .btn-pair{display:flex; gap:10px; margin-bottom:16px;}
-  .btn-pair .btn{width:auto; flex:1;}
+  .btn.outline-ballpen{background:transparent; color:var(--ballpen); border:1.5px solid var(--ballpen);}
+  .btn-pair{display:flex; gap:8px; margin-bottom:16px;}
+  .btn-pair .btn{width:auto; flex:1; padding:0 8px; font-size:13.5px;}
+  .pay-hub-section{margin-bottom:20px;}
+  .pay-hub-section:last-child{margin-bottom:0;}
   .err-text{color:var(--brick); font-size:13px; margin-top:10px; min-height:16px;}
   .back-link{background:none; border:none; color:var(--ballpen); font-size:13px; padding:0; margin-bottom:16px; font-weight:600;}
 
@@ -518,6 +521,12 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
     </div>`).join('') : `<div class="empty-note">No expenses recorded for this period.</div>`;
 
   return `
+    <div class="btn-pair">
+      <button class="btn" id="open-add-expense">+ Expense</button>
+      <button class="btn outline-peso" id="open-deposit">+ Deposit</button>
+      <button class="btn outline-ballpen" id="open-pay-hub">Pay</button>
+    </div>
+
     <div class="card">
       <div class="row-between"><h3>${tfLabel} Budget</h3></div>
       <div class="gauge-track"><div class="gauge-fill" style="width:${pct}%; background:${gaugeColor}"></div></div>
@@ -537,11 +546,6 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
     ${paymentRows ? `<div class="card"><h3>Recent Card Payments</h3>${paymentRows}</div>` : ''}
 
     ${depositRows ? `<div class="card"><h3>Recent Deposits</h3>${depositRows}</div>` : ''}
-
-    <div class="btn-pair">
-      <button class="btn" id="open-add-expense">+ Add Expense</button>
-      <button class="btn outline-peso" id="open-deposit">+ Deposit</button>
-    </div>
 
     <div class="card">
       <h3>Expenses (${tfLabel})</h3>
@@ -626,6 +630,8 @@ function wireTrackerOrSharedEvents(){
   if(addBtn) addBtn.onclick = openAddExpenseModal;
   const depositBtn = $('#open-deposit');
   if(depositBtn) depositBtn.onclick = openDepositModal;
+  const payHubBtn = $('#open-pay-hub');
+  if(payHubBtn) payHubBtn.onclick = openPayHubModal;
   const settingsBtn = $('#open-settings');
   if(settingsBtn) settingsBtn.onclick = openSettingsModal;
   document.querySelectorAll('[data-pay-card]').forEach(b=>{
@@ -712,6 +718,74 @@ async function submitCardPayment(cardId){
     $('#modal-save').textContent = 'Record Payment';
     $('#modal-save').disabled = false;
   }
+}
+
+/* ---------------- modal: pay hub ---------------- */
+function openPayHubModal(){
+  const cards = profile.moneySources.filter(s=>s.type==='Credit Card');
+  const myPayables = payables.filter(p=>!p.settled && (p.fromId===personId || p.toId===personId));
+
+  const cardRows = cards.map(c=>{
+    const limit = Number(c.creditLimit)||0;
+    return `
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${esc(c.name)}</div>
+        <div class="ledger-meta">${peso(c.balance)} available${limit ? ' of ' + peso(limit) + ' limit' : ''}</div>
+      </div>
+      <button class="pay-btn" data-hub-pay-card="${esc(c.id)}">Pay</button>
+    </div>`;
+  }).join('') || `<div class="empty-note">No credit cards yet — add one in Settings.</div>`;
+
+  const payableRows = myPayables.map(p=>{
+    const iOwe = p.toId===personId;
+    const label = iOwe ? `You owe ${esc(p.fromName)}` : `${esc(p.toName)} owes you`;
+    return `
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${label}</div>
+        <div class="ledger-meta">${esc(p.category)} · ${new Date(p.date).toLocaleDateString('en-PH',{month:'short',day:'numeric'})}</div>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+        <div class="mono ledger-amt" style="color:var(--brick)">${peso(p.amount)}</div>
+        <button class="pay-btn" data-hub-settle="${esc(p.id)}">Mark settled</button>
+      </div>
+    </div>`;
+  }).join('') || `<div class="empty-note">No open payables with anyone.</div>`;
+
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Pay</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">Pay down a credit card, or settle up with someone.</div>
+
+        <div class="pay-hub-section"><div class="section-title" style="margin-top:0">Credit Cards</div>${cardRows}</div>
+        <div class="pay-hub-section"><div class="section-title">Payables</div>${payableRows}</div>
+
+        <div class="btn-row"><button class="btn ghost" id="modal-cancel">Close</button></div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+
+  $('#modal-root').querySelectorAll('[data-hub-pay-card]').forEach(b=>{
+    b.onclick = ()=>openPayCardModal(b.dataset.hubPayCard);
+  });
+  $('#modal-root').querySelectorAll('[data-hub-settle]').forEach(b=>{
+    b.onclick = async ()=>{
+      b.disabled = true;
+      try{
+        await updateDoc(doc(db,'payables',b.dataset.hubSettle), { settled:true, settledAt: new Date().toISOString() });
+        toast('Marked as settled');
+        openPayHubModal();
+      }catch(err){
+        console.error(err);
+        toast('Could not update — try again');
+        b.disabled = false;
+      }
+    };
+  });
 }
 
 /* ---------------- modal: deposit ---------------- */
