@@ -89,8 +89,9 @@
   .who b{color:var(--ink); font-weight:600;}
   .switch-btn{background:none; border:none; color:var(--ballpen); font-size:13px; font-weight:600; padding:4px 0;}
 
-  .tabs{display:flex; gap:4px; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:4px; margin-bottom:20px;}
-  .tab{flex:1; text-align:center; padding:10px 0; border-radius:8px; font-weight:600; font-size:14px; border:none; background:transparent; color:var(--muted);}
+  .tabs{display:flex; gap:4px; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:4px; margin-bottom:20px;
+    overflow-x:auto; -webkit-overflow-scrolling:touch;}
+  .tab{flex:0 0 auto; white-space:nowrap; text-align:center; padding:10px 14px; border-radius:8px; font-weight:600; font-size:13.5px; border:none; background:transparent; color:var(--muted);}
   .tab.active{background:var(--peso); color:#fff;}
 
   .card{background:var(--surface); border:1px solid var(--line); border-radius:13px; padding:18px; box-shadow:0 1px 3px var(--shadow); margin-bottom:16px;}
@@ -482,6 +483,7 @@ function renderApp(){
     <div class="tabs">
       <button class="tab ${activeTab==='tracker'?'active':''}" data-tab="tracker">My Tracker</button>
       <button class="tab ${activeTab==='receivables'?'active':''}" data-tab="receivables">Receivables</button>
+      <button class="tab ${activeTab==='payables'?'active':''}" data-tab="payables">Payables</button>
       <button class="tab ${activeTab==='shared'?'active':''}" data-tab="shared">Shared Report</button>
     </div>
     ${activeTab==='tracker' ? `
@@ -499,6 +501,7 @@ function renderApp(){
   const content = $('#tab-content');
   content.innerHTML = activeTab==='tracker' ? trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, tfLabel)
     : activeTab==='receivables' ? receivablesTabHtml()
+    : activeTab==='payables' ? payablesTabHtml()
     : sharedTabHtml(tfLabel);
   wireTrackerOrSharedEvents();
 }
@@ -645,6 +648,68 @@ function receivablesTabHtml(){
     <div class="card"><h3>Active Loans</h3>${loanRows}</div>
 
     ${archivedLoanRows ? `<div class="card"><h3>Archived</h3>${archivedLoanRows}</div>` : ''}
+  `;
+}
+
+function payablesTabHtml(){
+  const creditCards = profile.moneySources.filter(s=>s.type==='Credit Card');
+  const totalCreditUsed = creditCards.reduce((sum,c)=>{
+    const limit = Number(c.creditLimit)||0;
+    const used = limit>0 ? Math.max(0, limit - Number(c.balance)) : 0;
+    return sum+used;
+  },0);
+  const myOwedPayables = payables.filter(p=>!p.settled && p.toId===personId);
+  const totalOwedToPeople = myOwedPayables.reduce((s,p)=>s+Number(p.amount||0),0);
+  const totalPayable = totalCreditUsed + totalOwedToPeople;
+
+  const cardRows = creditCards.map(c=>{
+    const limit = Number(c.creditLimit)||0;
+    const used = limit>0 ? Math.max(0, limit-Number(c.balance)) : 0;
+    const usedPct = limit>0 ? Math.min(100, (used/limit)*100) : 0;
+    const gColor = usedPct>90?'var(--brick)':usedPct>70?'var(--amber)':'var(--peso)';
+    return `
+    <div class="loan-card">
+      <div class="loan-top">
+        <div><div class="name" style="font-weight:600">${esc(c.name)}</div><div class="type">Credit Card</div></div>
+        <div class="mono ledger-amt" style="color:var(--brick)">${peso(used)}</div>
+      </div>
+      <div class="credit-gauge-track"><div class="credit-gauge-fill" style="width:${usedPct}%; background:${gColor}"></div></div>
+      <div class="loan-figures"><span>${peso(used)} used</span><span>of ${peso(limit)} limit</span></div>
+      <div class="loan-actions"><button class="pay-btn" data-pay-card="${esc(c.id)}">Pay this card</button></div>
+    </div>`;
+  }).join('') || `<div class="empty-note">No credit cards yet — add one in Settings.</div>`;
+
+  const peopleRows = myOwedPayables.map(p=>`
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">You owe ${esc(p.fromName)}</div>
+        <div class="ledger-meta">${esc(p.category)} · ${new Date(p.date).toLocaleDateString('en-PH',{month:'short',day:'numeric'})}</div>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+        <div class="mono ledger-amt" style="color:var(--brick)">${peso(p.amount)}</div>
+        <button class="pay-btn" data-settle-payable="${esc(p.id)}">Mark settled</button>
+      </div>
+    </div>`).join('') || `<div class="empty-note">You don't owe anyone right now.</div>`;
+
+  const creditExpenses = myExpenses.filter(e=>e.paymentMethod==='Credit Card').slice(0,50);
+  const creditExpenseRows = creditExpenses.map(e=>`
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${esc(e.category)}</div>
+        <div class="ledger-meta">${new Date(e.date).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})} · ${esc(e.moneySource)}</div>
+        ${e.notes ? `<div class="ledger-meta">${esc(e.notes)}</div>` : ''}
+      </div>
+      <div class="mono ledger-amt">-${peso(e.amount)}</div>
+    </div>`).join('') || `<div class="empty-note">No credit card purchases yet.</div>`;
+
+  return `
+    <div class="stat-grid" style="grid-template-columns:1fr">
+      <div class="stat-tile"><div class="label">Total Payable</div><div class="mono value" style="color:var(--brick)">${peso(totalPayable)}</div></div>
+    </div>
+
+    <div class="card"><h3>Credit Cards</h3>${cardRows}</div>
+    <div class="card"><h3>Owed to People</h3>${peopleRows}</div>
+    <div class="card"><h3>Credit Card Purchases</h3>${creditExpenseRows}</div>
   `;
 }
 
