@@ -1220,7 +1220,8 @@ function openAddReceivableModal(){
 
 /* ---------------- modal: add recurring bill ---------------- */
 function openAddRecurringModal(){
-  const catOptions = profile.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  const defaultCat = profile.categories.includes('Bills') ? 'Bills' : profile.categories[0];
+  const catOptions = profile.categories.map(c=>`<option value="${esc(c)}" ${c===defaultCat?'selected':''}>${esc(c)}</option>`).join('');
 
   $('#modal-root').innerHTML = `
     <div class="modal-overlay" id="modal-overlay">
