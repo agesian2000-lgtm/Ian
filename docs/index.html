@@ -209,6 +209,7 @@ const db = getFirestore(fbApp);
 
 const PAYMENT_METHODS = ['Cash','GCash','Debit Card','Credit Card'];
 const SOURCE_TYPES = ['Credit Card','Debit Card','Bank Account','Cash','E-Wallet (GCash/PayMaya)'];
+const BUDGET_EXCLUDED_CATEGORIES = ['Bills','Utilities'];
 
 const RECEIVABLES_IMPORT = [
   {debtorName:"Tita Belen", item:"Aircon", monthlyAmount:3191.58, termMonths:24, startDate:"2025-12-01", balance:44682.12},
@@ -484,7 +485,7 @@ function renderGate(){
 /* ---------------- main app render ---------------- */
 function totalsFor(expenses, frame, budgets){
   const filtered = expenses.filter(e=>isInTimeFrame(e.date, frame));
-  const spent = filtered.reduce((s,e)=>s+Number(e.amount||0),0);
+  const spent = filtered.filter(e=>!BUDGET_EXCLUDED_CATEGORIES.includes(e.category)).reduce((s,e)=>s+Number(e.amount||0),0);
   const budget = frame==='daily'?budgets.daily:frame==='weekly'?budgets.weekly:budgets.monthly;
   const remaining = Math.min(Math.max(budget-spent,0), budget);
   return { spent, budget, remaining, filtered };
