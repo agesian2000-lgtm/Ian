@@ -265,6 +265,23 @@ function isInTimeFrame(dateStr, frame){
   return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth();
 }
 
+function currentPeriod(){
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+}
+
+function recurringStatus(r){
+  const now = new Date();
+  const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+  const effectiveDueDay = Math.min(Number(r.dueDay)||1, lastDayOfMonth);
+  const today = now.getDate();
+  const paidThisPeriod = r.lastPaidPeriod === currentPeriod();
+  if(paidThisPeriod) return { state:'paid', label:'Paid this month', effectiveDueDay };
+  if(today < effectiveDueDay) return { state:'upcoming', label:`Due in ${effectiveDueDay-today} day${effectiveDueDay-today===1?'':'s'}`, effectiveDueDay };
+  if(today === effectiveDueDay) return { state:'due', label:'Due today', effectiveDueDay };
+  return { state:'overdue', label:`Overdue by ${today-effectiveDueDay} day${today-effectiveDueDay===1?'':'s'}`, effectiveDueDay };
+}
+
 function defaultProfile(displayName, pinHash){
   return {
     displayName, pinHash,
@@ -289,11 +306,12 @@ let cardPayments = [];
 let payables = [];
 let deposits = [];
 let receivables = [];
+let recurringPayables = [];
 let timeFrame = localStorage.getItem('ledger_timeframe') || 'daily';
 let activeTab = 'tracker';
 let gateStep = 'name'; // name | pin-existing | pin-new
 let gateName = '';
-let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null, unsubDeposits=null, unsubReceivables=null;
+let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null, unsubDeposits=null, unsubReceivables=null, unsubRecurring=null;
 
 function teardownSubs(){
   if(unsubProfile) unsubProfile();
@@ -303,13 +321,14 @@ function teardownSubs(){
   if(unsubPayables) unsubPayables();
   if(unsubDeposits) unsubDeposits();
   if(unsubReceivables) unsubReceivables();
-  unsubProfile=unsubMine=unsubShared=unsubPayments=unsubPayables=unsubDeposits=unsubReceivables=null;
+  if(unsubRecurring) unsubRecurring();
+  unsubProfile=unsubMine=unsubShared=unsubPayments=unsubPayables=unsubDeposits=unsubReceivables=unsubRecurring=null;
 }
 
 function logout(){
   teardownSubs();
   localStorage.removeItem('ledger_person_id');
-  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[]; deposits=[]; receivables=[];
+  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[]; deposits=[]; receivables=[]; recurringPayables=[];
   gateStep='name'; gateName='';
   renderRoot();
 }
@@ -355,6 +374,12 @@ function subscribeAll(){
   const receivablesQ = query(collection(db,'people',personId,'receivables'), orderBy('createdAt','desc'), limit(200));
   unsubReceivables = onSnapshot(receivablesQ, snap=>{
     receivables = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, err=>console.error(err));
+
+  const recurringQ = query(collection(db,'people',personId,'recurringPayables'), orderBy('createdAt','desc'), limit(100));
+  unsubRecurring = onSnapshot(recurringQ, snap=>{
+    recurringPayables = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
   }, err=>console.error(err));
 }
@@ -702,13 +727,51 @@ function payablesTabHtml(){
       <div class="mono ledger-amt">-${peso(e.amount)}</div>
     </div>`).join('') || `<div class="empty-note">No credit card purchases yet.</div>`;
 
+  const dueOrOverdue = recurringPayables
+    .map(r=>({r, status:recurringStatus(r)}))
+    .filter(x=>x.status.state==='due' || x.status.state==='overdue');
+
+  const bannerHtml = dueOrOverdue.map(({r,status})=>`
+    <div class="card" style="border-color:var(--brick); background:var(--brick-soft); margin-bottom:10px;">
+      <div class="row-between">
+        <div><div style="font-weight:700; color:var(--brick)">⚠ ${esc(r.description)}</div><div class="ledger-meta" style="color:var(--brick)">${peso(r.amount)} — ${status.label}</div></div>
+        <button class="pay-btn" data-mark-recurring-paid="${esc(r.id)}">Mark Paid</button>
+      </div>
+    </div>`).join('');
+
+  const recurringRows = recurringPayables.map(r=>{
+    const status = recurringStatus(r);
+    const color = status.state==='paid' ? 'var(--peso)' : (status.state==='upcoming' ? 'var(--muted)' : 'var(--brick)');
+    return `
+    <div class="loan-card">
+      <div class="loan-top">
+        <div><div class="name" style="font-weight:600">${esc(r.description)}</div><div class="type">Due on day ${r.dueDay} of the month</div></div>
+        <div class="mono ledger-amt">${peso(r.amount)}</div>
+      </div>
+      <div class="loan-figures"><span style="color:${color}; font-weight:600">${status.label}</span></div>
+      <div class="loan-actions">
+        ${status.state!=='paid' ? `<button class="pay-btn" data-mark-recurring-paid="${esc(r.id)}">Mark Paid</button>` : ''}
+        <button class="pay-btn secondary" data-remove-recurring="${esc(r.id)}">Remove</button>
+      </div>
+    </div>`;
+  }).join('') || `<div class="empty-note">No recurring bills yet.</div>`;
+
   return `
+    ${bannerHtml}
+
     <div class="stat-grid" style="grid-template-columns:1fr">
       <div class="stat-tile"><div class="label">Total Payable</div><div class="mono value" style="color:var(--brick)">${peso(totalPayable)}</div></div>
     </div>
 
     <div class="card"><h3>Credit Cards</h3>${cardRows}</div>
     <div class="card"><h3>Owed to People</h3>${peopleRows}</div>
+
+    <div class="card">
+      <div class="row-between"><h3>Recurring Bills</h3></div>
+      ${recurringRows}
+    </div>
+    <button class="btn outline-ballpen" id="open-add-recurring" style="margin-bottom:16px">+ Add Recurring Bill</button>
+
     <div class="card"><h3>Credit Card Purchases</h3>${creditExpenseRows}</div>
   `;
 }
@@ -784,6 +847,8 @@ function wireTrackerOrSharedEvents(){
   if(payHubBtn) payHubBtn.onclick = openPayHubModal;
   const addReceivableBtn = $('#open-add-receivable');
   if(addReceivableBtn) addReceivableBtn.onclick = openAddReceivableModal;
+  const addRecurringBtn = $('#open-add-recurring');
+  if(addRecurringBtn) addRecurringBtn.onclick = openAddRecurringModal;
   const settingsBtn = $('#open-settings');
   if(settingsBtn) settingsBtn.onclick = openSettingsModal;
   document.querySelectorAll('[data-pay-card]').forEach(b=>{
@@ -807,6 +872,18 @@ function wireTrackerOrSharedEvents(){
   });
   document.querySelectorAll('[data-bill-installment]').forEach(b=>{
     b.onclick = ()=>billNextInstallment(b.dataset.billInstallment);
+  });
+  document.querySelectorAll('[data-mark-recurring-paid]').forEach(b=>{
+    b.onclick = ()=>openMarkRecurringPaidModal(b.dataset.markRecurringPaid);
+  });
+  document.querySelectorAll('[data-remove-recurring]').forEach(b=>{
+    b.onclick = async ()=>{
+      b.disabled = true;
+      try{
+        await deleteDoc(doc(db,'people',personId,'recurringPayables',b.dataset.removeRecurring));
+        toast('Removed');
+      }catch(err){ console.error(err); toast('Could not remove — try again'); b.disabled=false; }
+    };
   });
   document.querySelectorAll('[data-archive-receivable]').forEach(b=>{
     b.onclick = async ()=>{
@@ -1135,6 +1212,107 @@ function openAddReceivableModal(){
       console.error(err);
       errEl.textContent = 'Could not save — try again.';
       $('#modal-save').textContent = 'Add Receivable';
+      $('#modal-save').disabled = false;
+    }
+  };
+}
+
+/* ---------------- modal: add recurring bill ---------------- */
+function openAddRecurringModal(){
+  const catOptions = profile.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Add Recurring Bill</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">Get a reminder on the Payables tab every month on this day.</div>
+        <div class="field"><label>Description</label><input id="rb-desc" type="text" placeholder="e.g. Rent to Landlord"></div>
+        <div class="field"><label>Amount (₱)</label><input id="rb-amount" type="number" step="0.01" value="0"></div>
+        <div class="field"><label>Due day of month (1-31)</label><input id="rb-day" type="number" min="1" max="31" value="1"></div>
+        <div class="field"><label>Category (for logging the expense)</label><select id="rb-category">${catOptions}</select></div>
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">Add Bill</button>
+        </div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+  $('#modal-save').onclick = async ()=>{
+    const description = $('#rb-desc').value.trim();
+    const amount = parseFloat($('#rb-amount').value)||0;
+    const dueDay = parseInt($('#rb-day').value)||0;
+    const category = $('#rb-category').value;
+    const errEl = $('#modal-err');
+    if(!description || amount<=0 || dueDay<1 || dueDay>31){ errEl.textContent='Please fill in all fields correctly.'; return; }
+    $('#modal-save').textContent = 'Saving…';
+    $('#modal-save').disabled = true;
+    try{
+      await addDoc(collection(db,'people',personId,'recurringPayables'), {
+        description, amount, dueDay, category, lastPaidPeriod: null, createdAt: Date.now()
+      });
+      closeModal();
+      toast('Recurring bill added');
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'Could not save — try again.';
+      $('#modal-save').textContent = 'Add Bill';
+      $('#modal-save').disabled = false;
+    }
+  };
+}
+
+function openMarkRecurringPaidModal(recurringId){
+  const r = recurringPayables.find(x=>x.id===recurringId);
+  if(!r) return;
+  const srcOptions = profile.moneySources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('');
+
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Mark Paid</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">${esc(r.description)} — logs as an expense this month.</div>
+        <div class="field"><label>Amount (₱)</label><input id="rp-amount" type="number" step="0.01" value="${r.amount}"></div>
+        <div class="field"><label>Paid from</label><select id="rp-source">${srcOptions}</select></div>
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">Mark Paid</button>
+        </div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+  $('#modal-save').onclick = async ()=>{
+    const amount = parseFloat($('#rp-amount').value);
+    const sourceId = $('#rp-source').value;
+    const errEl = $('#modal-err');
+    if(!amount || amount<=0){ errEl.textContent='Enter a valid amount.'; return; }
+    const source = profile.moneySources.find(s=>s.id===sourceId);
+    if(!source){ errEl.textContent='Select an account.'; return; }
+    $('#modal-save').textContent = 'Saving…';
+    $('#modal-save').disabled = true;
+    try{
+      const dateIso = new Date().toISOString();
+      await addDoc(collection(db,'people',personId,'expenses'), {
+        amount, category: r.category||'Bills', paymentMethod: source.type==='Credit Card'?'Credit Card':'Cash',
+        moneySource: source.name, notes: r.description, date: dateIso, createdAt: Date.now()
+      });
+      const updatedSources = profile.moneySources.map(s => s.id===sourceId ? {...s, balance: Number(s.balance)-amount} : s);
+      await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+      await addDoc(collection(db,'sharedExpenses'), {
+        ownerId: personId, ownerName: profile.displayName, amount, category: r.category||'Bills', date: dateIso, createdAt: Date.now()
+      });
+      await updateDoc(doc(db,'people',personId,'recurringPayables',r.id), { lastPaidPeriod: currentPeriod() });
+      closeModal();
+      toast('Marked paid');
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'Could not save — try again.';
+      $('#modal-save').textContent = 'Mark Paid';
       $('#modal-save').disabled = false;
     }
   };
