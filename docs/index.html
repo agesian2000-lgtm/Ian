@@ -529,9 +529,19 @@ function renderGate(){
 }
 
 /* ---------------- main app render ---------------- */
+function splitAmountOf(e){
+  if(Number(e.splitAmount)>0) return Number(e.splitAmount);
+  if(!e.splitPayableId) return 0;
+  const p = payables.find(x=>x.id===e.splitPayableId);
+  return p ? Number(p.amount)||0 : 0;
+}
+function myShare(e){
+  return Math.max(0, Number(e.amount||0) - splitAmountOf(e));
+}
+
 function totalsFor(expenses, frame, budgets){
   const filtered = expenses.filter(e=>isInTimeFrame(e.date, frame));
-  const spent = filtered.filter(e=>!BUDGET_EXCLUDED_CATEGORIES.includes(e.category)).reduce((s,e)=>s+Number(e.amount||0),0);
+  const spent = filtered.filter(e=>!BUDGET_EXCLUDED_CATEGORIES.includes(e.category)).reduce((s,e)=>s+myShare(e),0);
   const budget = frame==='daily'?budgets.daily:frame==='weekly'?budgets.weekly:budgets.monthly;
   const remaining = Math.min(Math.max(budget-spent,0), budget);
   return { spent, budget, remaining, filtered };
@@ -627,6 +637,7 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
         <div class="ledger-meta">${new Date(e.date).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div>
         <div class="ledger-tags"><span class="tag">${esc(e.paymentMethod)}</span><span class="tag">${esc(e.moneySource)}</span></div>
         ${e.notes ? `<div class="ledger-meta">${esc(e.notes)}</div>` : ''}
+        ${splitAmountOf(e)>0 ? `<div class="ledger-meta">Split${e.splitWho ? ' with ' + esc(e.splitWho) : ''} — your share ${peso(myShare(e))}</div>` : ''}
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
         <div class="mono ledger-amt">-${peso(e.amount)}</div>
@@ -1545,7 +1556,7 @@ async function submitExpense(){
         toId: splitWhoId, toName: splitWhoName,
         amount: splitAmount, category, date: dateIso, createdAt: Date.now(), settled: false
       });
-      await updateDoc(expenseRef, { splitPayableId: payRef.id, splitWho: splitWhoName });
+      await updateDoc(expenseRef, { splitPayableId: payRef.id, splitWho: splitWhoName, splitAmount });
     }
     closeModal();
     toast('Expense added');
@@ -1720,7 +1731,7 @@ async function openEditExpenseModal(expenseId){
           toId: splitWhoId, toName: splitWhoName,
           amount: splitAmount, category, date: e.date, createdAt: Date.now(), settled: false
         });
-        await updateDoc(doc(db,'people',personId,'expenses',e.id), { splitPayableId: payRef.id, splitWho: splitWhoName });
+        await updateDoc(doc(db,'people',personId,'expenses',e.id), { splitPayableId: payRef.id, splitWho: splitWhoName, splitAmount });
       }
       closeModal();
       toast(doSplit ? 'Expense updated and payable added' : 'Expense updated');
