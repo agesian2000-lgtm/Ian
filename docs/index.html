@@ -1467,17 +1467,18 @@ async function submitExpense(){
     const sharedRef = await addDoc(collection(db,'sharedExpenses'), {
       ownerId: personId, ownerName: profile.displayName, amount, category, date: dateIso, createdAt: Date.now()
     });
-    await addDoc(collection(db,'people',personId,'expenses'), {
+    const expenseRef = await addDoc(collection(db,'people',personId,'expenses'), {
       amount, category, paymentMethod, moneySource: source.name, moneySourceId: source.id, notes, date: dateIso, createdAt: Date.now(), sharedId: sharedRef.id
     });
     const updatedSources = profile.moneySources.map(s => s.id===sourceId ? {...s, balance: Number(s.balance)-amount} : s);
     await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
     if(isSplit){
-      await addDoc(collection(db,'payables'), {
+      const payRef = await addDoc(collection(db,'payables'), {
         fromId: personId, fromName: profile.displayName,
         toId: splitWhoId, toName: splitWhoName,
         amount: splitAmount, category, date: dateIso, createdAt: Date.now(), settled: false
       });
+      await updateDoc(expenseRef, { splitPayableId: payRef.id, splitWho: splitWhoName });
     }
     closeModal();
     toast('Expense added');
@@ -1551,9 +1552,12 @@ function openTransferModal(){
 }
 
 /* ---------------- modal: edit expense ---------------- */
-function openEditExpenseModal(expenseId){
+async function openEditExpenseModal(expenseId){
   const e = myExpenses.find(x=>x.id===expenseId);
   if(!e) return;
+  const peopleSnap = await getDocs(collection(db,'people'));
+  const otherPeople = peopleSnap.docs.filter(d=>d.id!==personId).map(d=>({id:d.id, name:d.data().displayName}));
+  const alreadySplit = !!e.splitPayableId;
   const oldSource = profile.moneySources.find(s=>s.id===e.moneySourceId) || profile.moneySources.find(s=>s.name===e.moneySource);
   const cats = profile.categories.includes(e.category) ? profile.categories : [...profile.categories, e.category];
   const catOptions = cats.map(c=>`<option value="${esc(c)}" ${c===e.category?'selected':''}>${esc(c)}</option>`).join('');
@@ -1570,6 +1574,21 @@ function openEditExpenseModal(expenseId){
         <div class="field"><label>Payment Method</label><select id="ee-payment">${pmOptions}</select></div>
         <div class="field"><label>Money Source</label><select id="ee-source">${srcOptions}</select></div>
         <div class="field"><label>Notes</label><input id="ee-notes" type="text" value="${esc(e.notes||'')}"></div>
+
+        ${alreadySplit ? `<div class="field-hint">Already split with ${esc(e.splitWho||'someone')} — see Payables.</div>`
+        : otherPeople.length ? `
+        <div class="check-row">
+          <input type="checkbox" id="ee-split-toggle">
+          <label for="ee-split-toggle">Someone else owes part of this</label>
+        </div>
+        <div id="ee-split-fields" style="display:none">
+          <div class="field"><label>Who owes</label><select id="ee-split-who">${otherPeople.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></div>
+          <div style="display:flex; gap:10px;">
+            <div class="field" style="flex:1"><label>Their share (%)</label><input id="ee-split-pct" type="number" inputmode="decimal" min="0" max="100" step="0.01" value="50"></div>
+            <div class="field" style="flex:1"><label>Amount they owe (₱)</label><input id="ee-split-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></div>
+          </div>
+          <div class="field-hint">Shows up on the Shared Report and Payables until marked settled.</div>
+        </div>` : ''}
         <div class="err-text" id="modal-err"></div>
         <div class="btn-row">
           <button class="btn ghost" id="modal-cancel">Cancel</button>
@@ -1580,6 +1599,19 @@ function openEditExpenseModal(expenseId){
   $('#modal-x').onclick = closeModal;
   $('#modal-cancel').onclick = closeModal;
   $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
+
+  const eeToggle = $('#ee-split-toggle');
+  if(eeToggle){
+    const round2 = n => Math.round(n*100)/100;
+    const amtIn = $('#ee-amount'), pctIn = $('#ee-split-pct'), splitAmtIn = $('#ee-split-amount');
+    const fromPct = ()=>{ const t=parseFloat(amtIn.value)||0, p=parseFloat(pctIn.value)||0; splitAmtIn.value = t>0 ? round2(t*p/100) : ''; };
+    const fromAmt = ()=>{ const t=parseFloat(amtIn.value)||0, a=parseFloat(splitAmtIn.value)||0; pctIn.value = t>0 ? round2(a/t*100) : ''; };
+    eeToggle.onchange = ()=>{ $('#ee-split-fields').style.display = eeToggle.checked ? '' : 'none'; if(eeToggle.checked) fromPct(); };
+    pctIn.addEventListener('input', fromPct);
+    splitAmtIn.addEventListener('input', fromAmt);
+    amtIn.addEventListener('input', ()=>{ if(eeToggle.checked) fromPct(); });
+  }
+
   $('#modal-save').onclick = async ()=>{
     const amount = parseFloat($('#ee-amount').value);
     const category = $('#ee-category').value;
@@ -1590,6 +1622,14 @@ function openEditExpenseModal(expenseId){
     if(!amount || amount<=0){ errEl.textContent='Enter a valid amount.'; return; }
     const newSource = profile.moneySources.find(s=>s.id===newSourceId);
     if(!newSource){ errEl.textContent='Select an account.'; return; }
+    const doSplit = eeToggle && eeToggle.checked;
+    let splitWhoId = null, splitWhoName = null, splitAmount = 0;
+    if(doSplit){
+      splitWhoId = $('#ee-split-who').value;
+      splitAmount = parseFloat($('#ee-split-amount').value);
+      if(!splitAmount || splitAmount<=0){ errEl.textContent='Enter a valid amount owed.'; return; }
+      splitWhoName = $('#ee-split-who').selectedOptions[0].textContent;
+    }
     $('#modal-save').textContent = 'Saving…';
     $('#modal-save').disabled = true;
     try{
@@ -1607,8 +1647,16 @@ function openEditExpenseModal(expenseId){
       if(e.sharedId){
         await updateDoc(doc(db,'sharedExpenses',e.sharedId), { amount, category });
       }
+      if(doSplit){
+        const payRef = await addDoc(collection(db,'payables'), {
+          fromId: personId, fromName: profile.displayName,
+          toId: splitWhoId, toName: splitWhoName,
+          amount: splitAmount, category, date: e.date, createdAt: Date.now(), settled: false
+        });
+        await updateDoc(doc(db,'people',personId,'expenses',e.id), { splitPayableId: payRef.id, splitWho: splitWhoName });
+      }
       closeModal();
-      toast('Expense updated');
+      toast(doSplit ? 'Expense updated and payable added' : 'Expense updated');
     }catch(err){
       console.error(err);
       errEl.textContent = 'Could not save — try again.';
