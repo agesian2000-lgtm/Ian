@@ -193,7 +193,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, addDoc,
-  query, orderBy, limit, onSnapshot
+  query, orderBy, limit, onSnapshot, runTransaction
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -335,11 +335,56 @@ function logout(){
   renderRoot();
 }
 
+const todayStr = ()=> new Date().toLocaleDateString('en-CA');
+const dayNum = s => { const [y,m,d] = s.split('-').map(Number); return Date.UTC(y,m-1,d)/86400000; };
+let interestChecked = false;
+
+async function accrueInterest(){
+  if(interestChecked || !personId) return;
+  interestChecked = true;
+  const today = todayStr();
+  const credited = [];
+  try{
+    await runTransaction(db, async tx=>{
+      credited.length = 0;
+      const ref = doc(db,'people',personId);
+      const snap = await tx.get(ref);
+      if(!snap.exists()) return;
+      let changed = false;
+      const updated = (snap.data().moneySources||[]).map(s=>{
+        const rate = Number(s.interestRate)||0;
+        if(rate<=0 || !s.lastInterestDate || s.lastInterestDate>=today) return s;
+        const days = Math.min(400, dayNum(today)-dayNum(s.lastInterestDate));
+        let bal = Number(s.balance), total = 0;
+        for(let i=0;i<days;i++){
+          const inc = Math.round(bal*rate/100/365*100)/100;
+          bal += inc; total += inc;
+        }
+        changed = true;
+        if(total>0) credited.push({ sourceId:s.id, sourceName:s.name, amount:Math.round(total*100)/100, days, rate });
+        return { ...s, balance: Math.round(bal*100)/100, lastInterestDate: today };
+      });
+      if(changed) tx.update(ref, { moneySources: updated });
+    });
+    for(const c of credited){
+      await addDoc(collection(db,'people',personId,'deposits'), {
+        sourceId:c.sourceId, sourceName:c.sourceName, amount:c.amount,
+        note:`Interest ${c.rate}% p.a. (${c.days} day${c.days===1?'':'s'})`, date:new Date().toISOString(), createdAt:Date.now()
+      });
+    }
+    if(credited.length) toast('Interest credited');
+  }catch(err){ console.error(err); }
+}
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='visible' && personId){ interestChecked = false; accrueInterest(); }
+});
+
 function subscribeAll(){
   const profRef = doc(db,'people',personId);
   unsubProfile = onSnapshot(profRef, snap=>{
     if(!snap.exists()){ logout(); return; }
     profile = snap.data();
+    accrueInterest();
     render();
   }, err=>{ console.error(err); toast('Connection issue — retrying…'); });
 
@@ -552,7 +597,7 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
     }
     return `
     <div class="balance-row">
-      <div><div class="name">${esc(s.name)}</div><div class="type">${esc(s.type)}</div></div>
+      <div><div class="name">${esc(s.name)}</div><div class="type">${esc(s.type)}${Number(s.interestRate)>0 ? ` · ${s.interestRate}% p.a. daily interest` : ''}</div></div>
       <div class="mono ledger-amt" style="color:${s.balance<0?'var(--brick)':'var(--peso)'}">${peso(s.balance)}</div>
     </div>`;
   }).join('');
@@ -1684,7 +1729,8 @@ function sourceCardHtml(s){
       </div>
       <div class="source-edit">
         <div style="flex:1"><label style="font-size:11px;color:var(--muted)">${isCredit?'Available credit':'Balance'} (₱)</label><input type="number" step="0.01" value="${s.balance}" data-balance-src="${esc(s.id)}"></div>
-        ${isCredit ? `<div style="flex:1"><label style="font-size:11px;color:var(--muted)">Credit limit (₱)</label><input type="number" step="0.01" value="${s.creditLimit||0}" data-limit-src="${esc(s.id)}"></div>` : ''}
+        ${isCredit ? `<div style="flex:1"><label style="font-size:11px;color:var(--muted)">Credit limit (₱)</label><input type="number" step="0.01" value="${s.creditLimit||0}" data-limit-src="${esc(s.id)}"></div>`
+          : `<div style="flex:1"><label style="font-size:11px;color:var(--muted)">Interest (% per year)</label><input type="number" step="0.01" min="0" value="${s.interestRate||0}" data-interest-src="${esc(s.id)}"></div>`}
       </div>
       <button class="btn small" data-save-balance="${esc(s.id)}" style="margin-top:8px">Save</button>
     </div>`;
@@ -1814,11 +1860,17 @@ function renderSettingsModal(scope='general'){
       const id = b.dataset.saveBalance;
       const balInput = root.querySelector(`[data-balance-src="${id}"]`);
       const limitInput = root.querySelector(`[data-limit-src="${id}"]`);
+      const interestInput = root.querySelector(`[data-interest-src="${id}"]`);
       const newBal = parseFloat(balInput.value)||0;
       const updated = profile.moneySources.map(s=>{
         if(s.id!==id) return s;
         const next = {...s, balance:newBal};
         if(limitInput) next.creditLimit = parseFloat(limitInput.value)||0;
+        if(interestInput){
+          const rate = parseFloat(interestInput.value)||0;
+          next.interestRate = rate;
+          if(rate>0 && !next.lastInterestDate) next.lastInterestDate = todayStr();
+        }
         return next;
       });
       await updateDoc(doc(db,'people',personId), { moneySources: updated });
