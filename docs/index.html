@@ -308,7 +308,8 @@ let payables = [];
 let deposits = [];
 let receivables = [];
 let recurringPayables = [];
-let timeFrame = localStorage.getItem('ledger_timeframe') || 'daily';
+let timeFrame = localStorage.getItem('ledger_timeframe');
+if(timeFrame !== 'weekly' && timeFrame !== 'monthly') timeFrame = 'weekly';
 let activeTab = 'tracker';
 let gateStep = 'name'; // name | pin-existing | pin-new
 let gateName = '';
@@ -499,7 +500,7 @@ function renderApp(){
   const isWarn = !isOver && totals.remaining < totals.budget*0.2;
   const gaugeColor = isOver ? 'var(--brick)' : isWarn ? 'var(--amber)' : 'var(--peso)';
   const pct = totals.budget>0 ? Math.min(totals.spent/totals.budget,1)*100 : 0;
-  const tfLabel = {daily:'Daily',weekly:'Weekly',monthly:'Monthly'}[timeFrame];
+  const tfLabel = {weekly:'Weekly',monthly:'Monthly'}[timeFrame];
 
   app.innerHTML = `
     <div class="topbar">
@@ -514,7 +515,7 @@ function renderApp(){
     </div>
     ${activeTab==='tracker' ? `
     <div class="tf-select">
-      ${['daily','weekly','monthly'].map(f=>`<button class="tf-btn ${timeFrame===f?'active':''}" data-tf="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
+      ${['weekly','monthly'].map(f=>`<button class="tf-btn ${timeFrame===f?'active':''}" data-tf="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
     </div>` : ''}
     <div id="tab-content"></div>
     <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.</footer>
@@ -582,13 +583,17 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
         <div class="ledger-tags"><span class="tag">${esc(e.paymentMethod)}</span><span class="tag">${esc(e.moneySource)}</span></div>
         ${e.notes ? `<div class="ledger-meta">${esc(e.notes)}</div>` : ''}
       </div>
-      <div class="mono ledger-amt">-${peso(e.amount)}</div>
+      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+        <div class="mono ledger-amt">-${peso(e.amount)}</div>
+        <button class="pay-btn" data-edit-expense="${esc(e.id)}">Edit</button>
+      </div>
     </div>`).join('') : `<div class="empty-note">No expenses recorded for this period.</div>`;
 
   return `
     <div class="btn-pair">
       <button class="btn" id="open-add-expense">+ Expense</button>
       <button class="btn outline-peso" id="open-deposit">+ Deposit</button>
+      <button class="btn outline-peso" id="open-transfer">Transfer</button>
       <button class="btn outline-ballpen" id="open-pay-hub">Pay</button>
     </div>
 
@@ -846,6 +851,8 @@ function wireTrackerOrSharedEvents(){
   if(depositBtn) depositBtn.onclick = openDepositModal;
   const payHubBtn = $('#open-pay-hub');
   if(payHubBtn) payHubBtn.onclick = openPayHubModal;
+  const transferBtn = $('#open-transfer');
+  if(transferBtn) transferBtn.onclick = openTransferModal;
   const addReceivableBtn = $('#open-add-receivable');
   if(addReceivableBtn) addReceivableBtn.onclick = openAddReceivableModal;
   const addRecurringBtn = $('#open-add-recurring');
@@ -873,6 +880,9 @@ function wireTrackerOrSharedEvents(){
   });
   document.querySelectorAll('[data-bill-installment]').forEach(b=>{
     b.onclick = ()=>billNextInstallment(b.dataset.billInstallment);
+  });
+  document.querySelectorAll('[data-edit-expense]').forEach(b=>{
+    b.onclick = ()=>openEditExpenseModal(b.dataset.editExpense);
   });
   document.querySelectorAll('[data-mark-recurring-paid]').forEach(b=>{
     b.onclick = ()=>openMarkRecurringPaidModal(b.dataset.markRecurringPaid);
@@ -1180,6 +1190,10 @@ function openAddReceivableModal(){
         <div class="field"><label>Start date</label><input id="ar-start" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
         <div class="field"><label>Current balance owed (₱)</label><input id="ar-balance" type="number" step="0.01" value="0"></div>
         <div class="field-hint">Leave balance at the full loan amount for a brand-new loan, or set it to what's currently still owed.</div>
+        <div class="field"><label>Money lent out came from</label>
+          <select id="ar-from"><option value="none">Don't deduct from any account</option>${profile.moneySources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('')}</select>
+        </div>
+        <div class="field" id="ar-lent-field" style="display:none"><label>Amount to deduct (₱)</label><input id="ar-lent" type="number" step="0.01" value="0"></div>
         <div class="err-text" id="modal-err"></div>
         <div class="btn-row">
           <button class="btn ghost" id="modal-cancel">Cancel</button>
@@ -1190,6 +1204,14 @@ function openAddReceivableModal(){
   $('#modal-x').onclick = closeModal;
   $('#modal-cancel').onclick = closeModal;
   $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+  let lentTouched = false;
+  $('#ar-lent').addEventListener('input', ()=>{ lentTouched = true; });
+  $('#ar-balance').addEventListener('input', ()=>{ if(!lentTouched) $('#ar-lent').value = $('#ar-balance').value; });
+  $('#ar-from').onchange = ()=>{
+    const on = $('#ar-from').value !== 'none';
+    $('#ar-lent-field').style.display = on ? '' : 'none';
+    if(on && !lentTouched) $('#ar-lent').value = $('#ar-balance').value;
+  };
   $('#modal-save').onclick = async ()=>{
     const debtorName = $('#ar-name').value.trim();
     const item = $('#ar-item').value.trim();
@@ -1197,16 +1219,24 @@ function openAddReceivableModal(){
     const termMonths = parseInt($('#ar-term').value)||0;
     const startDate = $('#ar-start').value;
     const balance = parseFloat($('#ar-balance').value)||0;
+    const fromId = $('#ar-from').value;
+    const lent = parseFloat($('#ar-lent').value)||0;
+    const fromSource = fromId!=='none' ? profile.moneySources.find(s=>s.id===fromId) : null;
     const errEl = $('#modal-err');
     if(!debtorName || !item || monthlyAmount<=0 || termMonths<=0 || !startDate){
       errEl.textContent = 'Please fill in all fields.'; return;
     }
+    if(fromSource && lent<=0){ errEl.textContent = 'Enter the amount to deduct.'; return; }
     $('#modal-save').textContent = 'Saving…';
     $('#modal-save').disabled = true;
     try{
       await addDoc(collection(db,'people',personId,'receivables'), {
         debtorName, item, monthlyAmount, termMonths, startDate, balance, createdAt: Date.now()
       });
+      if(fromSource){
+        const updatedSources = profile.moneySources.map(s => s.id===fromSource.id ? {...s, balance: Math.round((Number(s.balance)-lent)*100)/100} : s);
+        await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+      }
       closeModal();
       toast('Receivable added');
     }catch(err){
@@ -1352,8 +1382,11 @@ async function openAddExpenseModal(){
         </div>
         <div id="f-split-fields" style="display:none">
           <div class="field"><label>Who owes</label><select id="f-split-who">${splitOptions}</select></div>
-          <div class="field"><label>Amount they owe (₱)</label><input id="f-split-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></div>
-          <div class="field-hint">This shows up on the Shared Report as a payable until marked settled.</div>
+          <div style="display:flex; gap:10px;">
+            <div class="field" style="flex:1"><label>Their share (%)</label><input id="f-split-pct" type="number" inputmode="decimal" min="0" max="100" step="0.01" value="50"></div>
+            <div class="field" style="flex:1"><label>Amount they owe (₱)</label><input id="f-split-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></div>
+          </div>
+          <div class="field-hint">Change the percentage or the amount — the other updates automatically. This shows up on the Shared Report as a payable until marked settled.</div>
         </div>` : ''}
 
         <div class="err-text" id="modal-err"></div>
@@ -1368,16 +1401,29 @@ async function openAddExpenseModal(){
   $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
   $('#modal-save').onclick = submitExpense;
   const splitToggle = $('#f-split-toggle');
-  if(splitToggle){
-    splitToggle.onchange = ()=>{ $('#f-split-fields').style.display = splitToggle.checked ? '' : 'none'; };
-  }
   const amountInput = $('#f-amount');
-  amountInput.addEventListener('input', ()=>{
-    const splitAmt = $('#f-split-amount');
-    if(splitAmt && splitToggle && splitToggle.checked && !splitAmt.dataset.touched) splitAmt.value = amountInput.value;
-  });
+  const pctInput = $('#f-split-pct');
   const splitAmountInput = $('#f-split-amount');
-  if(splitAmountInput) splitAmountInput.addEventListener('input', ()=>{ splitAmountInput.dataset.touched = '1'; });
+  const round2 = n => Math.round(n*100)/100;
+  const syncFromPct = ()=>{
+    const total = parseFloat(amountInput.value)||0;
+    const pct = parseFloat(pctInput.value)||0;
+    splitAmountInput.value = total>0 ? round2(total*pct/100) : '';
+  };
+  const syncFromAmount = ()=>{
+    const total = parseFloat(amountInput.value)||0;
+    const amt = parseFloat(splitAmountInput.value)||0;
+    pctInput.value = total>0 ? round2(amt/total*100) : '';
+  };
+  if(splitToggle){
+    splitToggle.onchange = ()=>{
+      $('#f-split-fields').style.display = splitToggle.checked ? '' : 'none';
+      if(splitToggle.checked) syncFromPct();
+    };
+    pctInput.addEventListener('input', syncFromPct);
+    splitAmountInput.addEventListener('input', syncFromAmount);
+    amountInput.addEventListener('input', syncFromPct);
+  }
 }
 
 async function submitExpense(){
@@ -1407,14 +1453,14 @@ async function submitExpense(){
   $('#modal-save').disabled = true;
   try{
     const dateIso = new Date().toISOString();
+    const sharedRef = await addDoc(collection(db,'sharedExpenses'), {
+      ownerId: personId, ownerName: profile.displayName, amount, category, date: dateIso, createdAt: Date.now()
+    });
     await addDoc(collection(db,'people',personId,'expenses'), {
-      amount, category, paymentMethod, moneySource: source.name, notes, date: dateIso, createdAt: Date.now()
+      amount, category, paymentMethod, moneySource: source.name, moneySourceId: source.id, notes, date: dateIso, createdAt: Date.now(), sharedId: sharedRef.id
     });
     const updatedSources = profile.moneySources.map(s => s.id===sourceId ? {...s, balance: Number(s.balance)-amount} : s);
     await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
-    await addDoc(collection(db,'sharedExpenses'), {
-      ownerId: personId, ownerName: profile.displayName, amount, category, date: dateIso, createdAt: Date.now()
-    });
     if(isSplit){
       await addDoc(collection(db,'payables'), {
         fromId: personId, fromName: profile.displayName,
@@ -1430,6 +1476,135 @@ async function submitExpense(){
     $('#modal-save').textContent = 'Add Expense';
     $('#modal-save').disabled = false;
   }
+}
+
+/* ---------------- modal: transfer ---------------- */
+function openTransferModal(){
+  if(profile.moneySources.length < 2){ toast('Add at least two accounts in Settings first'); return; }
+  const opts = profile.moneySources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('');
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Transfer</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">Move money from one account to another.</div>
+        <div class="field"><label>From</label><select id="t-from">${opts}</select></div>
+        <div class="field"><label>To</label><select id="t-to">${opts}</select></div>
+        <div class="field"><label>Amount (₱)</label><input id="t-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></div>
+        <div class="field"><label>Note (optional)</label><input id="t-note" type="text" placeholder="e.g. Cash in to GCash"></div>
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">Transfer</button>
+        </div>
+      </div>
+    </div>`;
+  $('#t-to').selectedIndex = 1;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
+  $('#modal-save').onclick = async ()=>{
+    const fromId = $('#t-from').value, toId = $('#t-to').value;
+    const amount = parseFloat($('#t-amount').value);
+    const note = $('#t-note').value.trim();
+    const errEl = $('#modal-err');
+    if(fromId===toId){ errEl.textContent='Pick two different accounts.'; return; }
+    if(!amount || amount<=0){ errEl.textContent='Enter a valid amount.'; return; }
+    const from = profile.moneySources.find(s=>s.id===fromId);
+    const to = profile.moneySources.find(s=>s.id===toId);
+    $('#modal-save').textContent = 'Saving…';
+    $('#modal-save').disabled = true;
+    try{
+      const round2 = n => Math.round(n*100)/100;
+      const updatedSources = profile.moneySources.map(s=>{
+        if(s.id===fromId) return {...s, balance: round2(Number(s.balance)-amount)};
+        if(s.id===toId){
+          const nb = Number(s.balance)+amount;
+          const limit = Number(s.creditLimit)||0;
+          return {...s, balance: round2(s.type==='Credit Card' && limit>0 ? Math.min(nb, limit) : nb)};
+        }
+        return s;
+      });
+      await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+      await addDoc(collection(db,'people',personId,'transfers'), {
+        fromId, fromName: from.name, toId, toName: to.name, amount, note, date: new Date().toISOString(), createdAt: Date.now()
+      });
+      closeModal();
+      toast('Transfer complete');
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'Could not save — try again.';
+      $('#modal-save').textContent = 'Transfer';
+      $('#modal-save').disabled = false;
+    }
+  };
+}
+
+/* ---------------- modal: edit expense ---------------- */
+function openEditExpenseModal(expenseId){
+  const e = myExpenses.find(x=>x.id===expenseId);
+  if(!e) return;
+  const oldSource = profile.moneySources.find(s=>s.id===e.moneySourceId) || profile.moneySources.find(s=>s.name===e.moneySource);
+  const cats = profile.categories.includes(e.category) ? profile.categories : [...profile.categories, e.category];
+  const catOptions = cats.map(c=>`<option value="${esc(c)}" ${c===e.category?'selected':''}>${esc(c)}</option>`).join('');
+  const pmOptions = PAYMENT_METHODS.map(p=>`<option value="${esc(p)}" ${p===e.paymentMethod?'selected':''}>${esc(p)}</option>`).join('');
+  const srcOptions = profile.moneySources.map(s=>`<option value="${esc(s.id)}" ${oldSource && s.id===oldSource.id?'selected':''}>${esc(s.name)} (${peso(s.balance)})</option>`).join('');
+
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Edit Expense</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">Account balances adjust automatically if you change the amount or account.</div>
+        <div class="field"><label>Amount (₱)</label><input id="ee-amount" type="number" inputmode="decimal" min="0" step="0.01" value="${e.amount}"></div>
+        <div class="field"><label>Category</label><select id="ee-category">${catOptions}</select></div>
+        <div class="field"><label>Payment Method</label><select id="ee-payment">${pmOptions}</select></div>
+        <div class="field"><label>Money Source</label><select id="ee-source">${srcOptions}</select></div>
+        <div class="field"><label>Notes</label><input id="ee-notes" type="text" value="${esc(e.notes||'')}"></div>
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">Save Changes</button>
+        </div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
+  $('#modal-save').onclick = async ()=>{
+    const amount = parseFloat($('#ee-amount').value);
+    const category = $('#ee-category').value;
+    const paymentMethod = $('#ee-payment').value;
+    const newSourceId = $('#ee-source').value;
+    const notes = $('#ee-notes').value.trim();
+    const errEl = $('#modal-err');
+    if(!amount || amount<=0){ errEl.textContent='Enter a valid amount.'; return; }
+    const newSource = profile.moneySources.find(s=>s.id===newSourceId);
+    if(!newSource){ errEl.textContent='Select an account.'; return; }
+    $('#modal-save').textContent = 'Saving…';
+    $('#modal-save').disabled = true;
+    try{
+      const oldAmount = Number(e.amount);
+      const updatedSources = profile.moneySources.map(s=>{
+        let bal = Number(s.balance);
+        if(oldSource && s.id===oldSource.id) bal += oldAmount;
+        if(s.id===newSource.id) bal -= amount;
+        return bal===Number(s.balance) ? s : {...s, balance: Math.round(bal*100)/100};
+      });
+      await updateDoc(doc(db,'people',personId,'expenses',e.id), {
+        amount, category, paymentMethod, moneySource: newSource.name, moneySourceId: newSource.id, notes
+      });
+      await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+      if(e.sharedId){
+        await updateDoc(doc(db,'sharedExpenses',e.sharedId), { amount, category });
+      }
+      closeModal();
+      toast('Expense updated');
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'Could not save — try again.';
+      $('#modal-save').textContent = 'Save Changes';
+      $('#modal-save').disabled = false;
+    }
+  };
 }
 
 /* ---------------- modal: settings ---------------- */
@@ -1484,7 +1659,6 @@ function renderSettingsModal(){
         <div class="modal-head"><h2>Settings</h2><button class="x-btn" id="modal-x">&times;</button></div>
 
         <div class="section-title">Budgets</div>
-        <div class="field"><label>Daily (₱)</label><input id="s-daily" type="number" step="0.01" value="${b.daily}"></div>
         <div class="field"><label>Weekly (₱)</label><input id="s-weekly" type="number" step="0.01" value="${b.weekly}"></div>
         <div class="field"><label>Monthly (₱)</label><input id="s-monthly" type="number" step="0.01" value="${b.monthly}"></div>
         <button class="btn small" id="save-budgets">Save Budgets</button>
@@ -1526,7 +1700,7 @@ function renderSettingsModal(){
   $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
 
   $('#save-budgets').onclick = async ()=>{
-    const daily = parseFloat($('#s-daily').value)||0;
+    const daily = Number(profile.budgets.daily)||0;
     const weekly = parseFloat($('#s-weekly').value)||0;
     const monthly = parseFloat($('#s-monthly').value)||0;
     await updateDoc(doc(db,'people',personId), { budgets:{daily,weekly,monthly} });
