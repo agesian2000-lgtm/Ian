@@ -717,7 +717,7 @@ function renderLoanCard(r, archived){
   return `
   <div class="loan-card">
     <div class="loan-top">
-      <div><div class="name" style="font-weight:600">${esc(r.debtorName)}</div><div class="type">${esc(r.item)}</div></div>
+      <div><div class="name" style="font-weight:600">${esc(r.debtorName)}${r.payableId ? ' <span class="tag person">Shared</span>' : ''}</div><div class="type">${esc(r.item)}</div></div>
       <div class="mono ledger-amt" style="color:${isPaidOff?'var(--peso)':'var(--brick)'}">${isPaidOff ? 'Paid off' : peso(r.balance)}</div>
     </div>
     <div class="credit-gauge-track"><div class="credit-gauge-fill" style="width:${pct}%; background:var(--peso)"></div></div>
@@ -759,6 +759,21 @@ function receivablesTabHtml(){
 
     ${archivedLoanRows ? `<div class="card"><h3>Archived</h3>${archivedLoanRows}</div>` : ''}
   `;
+}
+
+async function settlePayableDoc(p){
+  await updateDoc(doc(db,'payables',p.id), { settled:true, settledAt: new Date().toISOString() });
+  if(p.receivableId && p.receivableOwnerId){
+    await updateDoc(doc(db,'people',p.receivableOwnerId,'receivables',p.receivableId), { balance: 0 });
+  }
+}
+
+async function syncReceivablePayable(r, newBalance){
+  if(!r || !r.payableId) return;
+  const settled = newBalance <= 0;
+  await updateDoc(doc(db,'payables',r.payableId), {
+    amount: Math.max(0, Math.round(newBalance*100)/100), settled, settledAt: settled ? new Date().toISOString() : null
+  });
 }
 
 function peopleBalancesHtml(){
@@ -818,10 +833,7 @@ function settleAllWith(otherId){
     [
       { label:'Settle all', run: async ()=>{
           try{
-            const at = new Date().toISOString();
-            for(const p of open){
-              await updateDoc(doc(db,'payables',p.id), { settled:true, settledAt: at });
-            }
+            for(const p of open) await settlePayableDoc(p);
             toast(`Settled everything with ${name}`);
           }catch(err){ console.error(err); toast('Could not settle all — try again'); }
         } },
@@ -1033,7 +1045,7 @@ function wireTrackerOrSharedEvents(){
     b.onclick = async ()=>{
       b.disabled = true;
       try{
-        await updateDoc(doc(db,'payables',b.dataset.settlePayable), { settled:true, settledAt: new Date().toISOString() });
+        await settlePayableDoc(payables.find(x=>x.id===b.dataset.settlePayable) || { id: b.dataset.settlePayable });
         toast('Marked as settled');
       }catch(err){
         console.error(err);
@@ -1207,7 +1219,7 @@ function openPayHubModal(){
     b.onclick = async ()=>{
       b.disabled = true;
       try{
-        await updateDoc(doc(db,'payables',b.dataset.hubSettle), { settled:true, settledAt: new Date().toISOString() });
+        await settlePayableDoc(payables.find(x=>x.id===b.dataset.hubSettle) || { id: b.dataset.hubSettle });
         toast('Marked as settled');
         openPayHubModal();
       }catch(err){
@@ -1310,6 +1322,7 @@ function openReceivablePaymentModal(receivableId){
     try{
       const newBalance = Math.max(0, Number(r.balance) - amount);
       await updateDoc(doc(db,'people',personId,'receivables',r.id), { balance: newBalance });
+      await syncReceivablePayable(r, newBalance);
       if(intoSource){
         const updatedSources = profile.moneySources.map(s => s.id===intoSource.id ? {...s, balance: Number(s.balance)+amount} : s);
         await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
@@ -1336,6 +1349,7 @@ async function billNextInstallment(receivableId){
     const total = Number(r.monthlyAmount)*Number(r.termMonths);
     const newBalance = Math.min(total, Number(r.balance) + Number(r.monthlyAmount));
     await updateDoc(doc(db,'people',personId,'receivables',r.id), { balance: newBalance });
+    await syncReceivablePayable(r, newBalance);
     toast(`Billed ${esc(r.debtorName)} for this month`);
   }catch(err){
     console.error(err);
@@ -1344,13 +1358,20 @@ async function billNextInstallment(receivableId){
 }
 
 /* ---------------- modal: add receivable ---------------- */
-function openAddReceivableModal(){
+async function openAddReceivableModal(){
+  const peopleSnap = await getDocs(collection(db,'people'));
+  const otherPeople = peopleSnap.docs.filter(d=>d.id!==personId).map(d=>({id:d.id, name:d.data().displayName}));
   $('#modal-root').innerHTML = `
     <div class="modal-overlay" id="modal-overlay">
       <div class="modal">
         <div class="modal-head"><h2>Add Receivable</h2><button class="x-btn" id="modal-x">&times;</button></div>
         <div class="modal-sub">Track money someone owes you for an item they're paying off over time.</div>
+        ${otherPeople.length ? `
+        <div class="field"><label>Who owes you</label>
+          <select id="ar-link"><option value="none">Someone outside the app (type name)</option>${otherPeople.map(p=>`<option value="${esc(p.id)}">${esc(p.name)} (app user)</option>`).join('')}</select>
+        </div>` : ''}
         <div class="field"><label>Debtor name</label><input id="ar-name" type="text" placeholder="e.g. Tita Belen"></div>
+        <div class="field-hint" id="ar-link-hint" style="display:none;margin-top:-8px;margin-bottom:12px">Shows on the Shared Report and counts toward what needs to be settled between you two.</div>
         <div class="field"><label>Item</label><input id="ar-item" type="text" placeholder="e.g. Aircon"></div>
         <div class="field"><label>Monthly installment (₱)</label><input id="ar-monthly" type="number" step="0.01" value="0"></div>
         <div class="field"><label>Term (months)</label><input id="ar-term" type="number" step="1" value="12"></div>
@@ -1371,6 +1392,15 @@ function openAddReceivableModal(){
   $('#modal-x').onclick = closeModal;
   $('#modal-cancel').onclick = closeModal;
   $('#modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+  const linkSel = $('#ar-link');
+  if(linkSel){
+    linkSel.onchange = ()=>{
+      const linked = linkSel.value !== 'none';
+      $('#ar-name').value = linked ? linkSel.selectedOptions[0].textContent.replace(' (app user)','') : '';
+      $('#ar-name').readOnly = linked;
+      $('#ar-link-hint').style.display = linked ? '' : 'none';
+    };
+  }
   let lentTouched = false;
   $('#ar-lent').addEventListener('input', ()=>{ lentTouched = true; });
   $('#ar-balance').addEventListener('input', ()=>{ if(!lentTouched) $('#ar-lent').value = $('#ar-balance').value; });
@@ -1397,9 +1427,20 @@ function openAddReceivableModal(){
     $('#modal-save').textContent = 'Saving…';
     $('#modal-save').disabled = true;
     try{
-      await addDoc(collection(db,'people',personId,'receivables'), {
-        debtorName, item, monthlyAmount, termMonths, startDate, balance, createdAt: Date.now()
+      const linkedId = linkSel && linkSel.value!=='none' ? linkSel.value : null;
+      const recRef = await addDoc(collection(db,'people',personId,'receivables'), {
+        debtorName, item, monthlyAmount, termMonths, startDate, balance, createdAt: Date.now(),
+        ...(linkedId ? { debtorId: linkedId } : {})
       });
+      if(linkedId && balance>0){
+        const payRef = await addDoc(collection(db,'payables'), {
+          fromId: personId, fromName: profile.displayName,
+          toId: linkedId, toName: debtorName,
+          amount: balance, category: item, date: new Date().toISOString(), createdAt: Date.now(), settled: false,
+          receivableId: recRef.id, receivableOwnerId: personId
+        });
+        await updateDoc(recRef, { payableId: payRef.id });
+      }
       if(fromSource){
         const updatedSources = profile.moneySources.map(s => s.id===fromSource.id ? {...s, balance: Math.round((Number(s.balance)-lent)*100)/100} : s);
         await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
@@ -2132,7 +2173,7 @@ function renderSettingsModal(scope='general'){
           'Archive keeps it (and its balance) on the Receivables tab under Archived, where you can restore it. Delete removes it permanently.',
           [
             { label:'Archive', run: async ()=>{ await updateDoc(doc(db,'people',personId,'receivables',id), { archived:true }); toast('Archived'); refreshSettings(scope); } },
-            { label:'Delete permanently', cls:'danger', run: async ()=>{ await deleteDoc(doc(db,'people',personId,'receivables',id)); toast('Deleted'); refreshSettings(scope); } },
+            { label:'Delete permanently', cls:'danger', run: async ()=>{ await syncReceivablePayable(r, 0); await deleteDoc(doc(db,'people',personId,'receivables',id)); toast('Deleted'); refreshSettings(scope); } },
             { label:'Cancel', cls:'ghost' }
           ]
         );
@@ -2160,6 +2201,7 @@ function renderSettingsModal(scope='general'){
         await updateDoc(doc(db,'people',personId,'receivables',id), {
           debtorName, item, monthlyAmount, termMonths, startDate, balance
         });
+        await syncReceivablePayable(receivables.find(x=>x.id===id), balance);
         toast('Receivable updated');
         refreshSettings(scope);
       };
