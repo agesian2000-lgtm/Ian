@@ -268,6 +268,13 @@ function isInTimeFrame(dateStr, frame){
   return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth();
 }
 
+function paymentMethodFor(source){
+  const t = source.type;
+  if(t==='Credit Card' || t==='Debit Card' || t==='Cash') return t;
+  if(t && t.startsWith('E-Wallet')) return 'E-Wallet';
+  return 'Bank Transfer';
+}
+
 function currentPeriod(){
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
@@ -602,7 +609,7 @@ function renderApp(){
       ${['weekly','monthly'].map(f=>`<button class="tf-btn ${timeFrame===f?'active':''}" data-tf="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
     </div>` : ''}
     <div id="tab-content"></div>
-    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-08 · edit/delete deposits</footer>
+    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-09 · no payment method field</footer>
   `;
 
   $('#switch-person').onclick = logout;
@@ -667,7 +674,7 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
       <div class="ledger-main">
         <div class="ledger-cat">${esc(e.category)}</div>
         <div class="ledger-meta">${new Date(e.date).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div>
-        <div class="ledger-tags"><span class="tag">${esc(e.paymentMethod)}</span><span class="tag">${esc(e.moneySource)}</span></div>
+        <div class="ledger-tags"><span class="tag">${esc(e.moneySource)}</span></div>
         ${e.notes ? `<div class="ledger-meta">${esc(e.notes)}</div>` : ''}
         ${splitAmountOf(e)>0 ? `<div class="ledger-meta">Split${e.splitWho ? ' with ' + esc(e.splitWho) : ''} — your share ${peso(myShare(e))}</div>` : ''}
       </div>
@@ -1726,7 +1733,7 @@ function openMarkRecurringPaidModal(recurringId){
     try{
       const dateIso = new Date().toISOString();
       await addDoc(collection(db,'people',personId,'expenses'), {
-        amount, category: r.category||'Bills', paymentMethod: source.type==='Credit Card'?'Credit Card':'Cash',
+        amount, category: r.category||'Bills', paymentMethod: paymentMethodFor(source),
         moneySource: source.name, notes: r.description, date: dateIso, createdAt: Date.now()
       });
       const updatedSources = profile.moneySources.map(s => s.id===sourceId ? {...s, balance: Number(s.balance)-amount} : s);
@@ -1789,7 +1796,6 @@ async function openAddExpenseModal(){
         <div class="modal-sub">Logged to your tracker and the shared report.</div>
         <div class="field"><label>Amount (₱)</label><input id="f-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></div>
         <div class="field"><label>Category</label><select id="f-category">${catOptions}</select></div>
-        <div class="field"><label>Payment Method</label><select id="f-payment">${pmOptions}</select></div>
         <div class="field"><label>Money Source</label><select id="f-source">${srcOptions}</select></div>
         <div class="field"><label>Notes (optional)</label><input id="f-notes" type="text" placeholder="Add notes..."></div>
 
@@ -1847,14 +1853,14 @@ async function openAddExpenseModal(){
 async function submitExpense(){
   const amount = parseFloat($('#f-amount').value);
   const category = $('#f-category').value;
-  const paymentMethod = $('#f-payment').value;
   const sourceId = $('#f-source').value;
   const notes = $('#f-notes').value.trim();
   const errEl = $('#modal-err');
 
   if(!amount || amount<=0){ errEl.textContent='Enter a valid amount.'; return; }
   const source = profile.moneySources.find(s=>s.id===sourceId);
-  if(!category || !paymentMethod || !source){ errEl.textContent='Please fill in all required fields.'; return; }
+  if(!category || !source){ errEl.textContent='Please fill in all required fields.'; return; }
+  const paymentMethod = paymentMethodFor(source);
 
   const splitToggle = $('#f-split-toggle');
   const isSplit = splitToggle && splitToggle.checked;
@@ -2109,7 +2115,6 @@ async function openEditExpenseModal(expenseId){
         <div class="modal-sub">Account balances adjust automatically if you change the amount or account.</div>
         <div class="field"><label>Amount (₱)</label><input id="ee-amount" type="number" inputmode="decimal" min="0" step="0.01" value="${e.amount}"></div>
         <div class="field"><label>Category</label><select id="ee-category">${catOptions}</select></div>
-        <div class="field"><label>Payment Method</label><select id="ee-payment">${pmOptions}</select></div>
         <div class="field"><label>Money Source</label><select id="ee-source">${srcOptions}</select></div>
         <div class="field"><label>Notes</label><input id="ee-notes" type="text" value="${esc(e.notes||'')}"></div>
 
@@ -2183,13 +2188,13 @@ async function openEditExpenseModal(expenseId){
   $('#modal-save').onclick = async ()=>{
     const amount = parseFloat($('#ee-amount').value);
     const category = $('#ee-category').value;
-    const paymentMethod = $('#ee-payment').value;
     const newSourceId = $('#ee-source').value;
     const notes = $('#ee-notes').value.trim();
     const errEl = $('#modal-err');
     if(!amount || amount<=0){ errEl.textContent='Enter a valid amount.'; return; }
     const newSource = profile.moneySources.find(s=>s.id===newSourceId);
     if(!newSource){ errEl.textContent='Select an account.'; return; }
+    const paymentMethod = (oldSource && oldSource.id===newSource.id && e.paymentMethod) ? e.paymentMethod : paymentMethodFor(newSource);
     const doSplit = eeToggle && eeToggle.checked;
     let splitWhoId = null, splitWhoName = null, splitAmount = 0;
     if(doSplit){
