@@ -311,16 +311,19 @@ let deposits = [];
 let receivables = [];
 let recurringPayables = [];
 let transfers = [];
+let adjustments = [];
 let timeFrame = localStorage.getItem('ledger_timeframe');
 if(timeFrame !== 'weekly' && timeFrame !== 'monthly') timeFrame = 'weekly';
 let activeTab = 'tracker';
 let gateStep = 'name'; // name | pin-existing | pin-new
 let gateName = '';
-let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null, unsubDeposits=null, unsubReceivables=null, unsubRecurring=null, unsubTransfers=null;
+let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null, unsubDeposits=null, unsubReceivables=null, unsubRecurring=null, unsubTransfers=null, unsubAdjustments=null;
 
 function teardownSubs(){
   if(unsubTransfers) unsubTransfers();
   unsubTransfers=null;
+  if(unsubAdjustments) unsubAdjustments();
+  unsubAdjustments=null;
   if(unsubProfile) unsubProfile();
   if(unsubMine) unsubMine();
   if(unsubShared) unsubShared();
@@ -335,7 +338,7 @@ function teardownSubs(){
 function logout(){
   teardownSubs();
   localStorage.removeItem('ledger_person_id');
-  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[]; deposits=[]; receivables=[]; recurringPayables=[]; transfers=[];
+  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[]; deposits=[]; receivables=[]; recurringPayables=[]; transfers=[]; adjustments=[];
   gateStep='name'; gateName='';
   renderRoot();
 }
@@ -432,6 +435,12 @@ function subscribeAll(){
   const transfersQ = query(collection(db,'people',personId,'transfers'), orderBy('createdAt','desc'), limit(100));
   unsubTransfers = onSnapshot(transfersQ, snap=>{
     transfers = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, err=>console.error(err));
+
+  const adjustmentsQ = query(collection(db,'people',personId,'adjustments'), orderBy('createdAt','desc'), limit(200));
+  unsubAdjustments = onSnapshot(adjustmentsQ, snap=>{
+    adjustments = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
   }, err=>console.error(err));
 
@@ -1320,6 +1329,10 @@ function openAddReceivableModal(){
       if(fromSource){
         const updatedSources = profile.moneySources.map(s => s.id===fromSource.id ? {...s, balance: Math.round((Number(s.balance)-lent)*100)/100} : s);
         await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+        await addDoc(collection(db,'people',personId,'adjustments'), {
+          sourceId: fromSource.id, sourceName: fromSource.name, amount: -lent, kind:'Loan given',
+          note:`Lent to ${debtorName} (${item})`, date: new Date().toISOString(), createdAt: Date.now()
+        });
       }
       closeModal();
       toast('Receivable added');
@@ -1599,6 +1612,9 @@ function accountTransactions(s){
     if(p.cardId===s.id) rows.push({ date:p.date, kind:'Card payment', label:`Payment received · from ${p.from}`, amount:Number(p.amount) });
     else if(p.from===s.name) rows.push({ date:p.date, kind:'Card payment', label:`Paid ${p.cardName}`, amount:-Number(p.amount) });
   });
+  adjustments.forEach(a=>{
+    if(a.sourceId===s.id) rows.push({ date:a.date, kind:a.kind, label:a.note || a.kind, amount:Number(a.amount) });
+  });
   transfers.forEach(t=>{
     if(t.fromId===s.id) rows.push({ date:t.date, kind:'Transfer', label:`To ${t.toName}` + (t.note ? ' · ' + t.note : ''), amount:-Number(t.amount) });
     if(t.toId===s.id) rows.push({ date:t.date, kind:'Transfer', label:`From ${t.fromName}` + (t.note ? ' · ' + t.note : ''), amount:Number(t.amount) });
@@ -1626,7 +1642,7 @@ function openAccountModal(accountId){
         <div class="modal-head"><h2>${esc(s.name)}</h2><button class="x-btn" id="modal-x">&times;</button></div>
         <div class="modal-sub">${isCredit ? 'Available credit' : 'Balance'}: <b class="mono">${peso(s.balance)}</b> · ${esc(s.type)}</div>
         ${list}
-        <div class="field-hint" style="margin-top:12px">Shows expenses, deposits (including interest and receivable payments), transfers, and card payments. Balance changes made directly in Settings or when lending out money aren't listed.</div>
+        <div class="field-hint" style="margin-top:12px">Shows expenses, deposits (including interest and receivable payments), transfers, card payments, money lent out, and balance edits made in Settings. Balance edits and loans made before this was added aren't listed.</div>
         <div class="btn-row"><button class="btn ghost" id="modal-cancel">Close</button></div>
       </div>
     </div>`;
@@ -1965,6 +1981,8 @@ function renderSettingsModal(scope='general'){
       const limitInput = root.querySelector(`[data-limit-src="${id}"]`);
       const interestInput = root.querySelector(`[data-interest-src="${id}"]`);
       const newBal = parseFloat(balInput.value)||0;
+      const before = profile.moneySources.find(s=>s.id===id);
+      const diff = before ? Math.round((newBal - Number(before.balance))*100)/100 : 0;
       const updated = profile.moneySources.map(s=>{
         if(s.id!==id) return s;
         const next = {...s, balance:newBal};
@@ -1978,6 +1996,12 @@ function renderSettingsModal(scope='general'){
       });
       await updateDoc(doc(db,'people',personId), { moneySources: updated });
       profile = { ...profile, moneySources: updated };
+      if(before && Math.abs(diff)>=0.01){
+        await addDoc(collection(db,'people',personId,'adjustments'), {
+          sourceId: before.id, sourceName: before.name, amount: diff, kind:'Balance adjustment',
+          note:'Balance edited in Settings', date: new Date().toISOString(), createdAt: Date.now()
+        });
+      }
       toast('Updated');
     };
   });
