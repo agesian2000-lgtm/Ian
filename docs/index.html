@@ -112,6 +112,8 @@
   .balance-list{display:flex; flex-direction:column; gap:0;}
   .balance-row{display:flex; justify-content:space-between; align-items:center; padding:11px 0; border-bottom:1px solid var(--line);}
   .balance-row:last-child{border-bottom:none;}
+  .balance-row[data-account]{cursor:pointer;}
+  .balance-row[data-account]:hover .name{text-decoration:underline;}
   .balance-row .name{font-weight:600; font-size:14px;}
   .balance-row .type{font-size:12px; color:var(--muted);}
   .balance-row.credit{flex-direction:column; align-items:stretch; gap:8px;}
@@ -308,14 +310,17 @@ let payables = [];
 let deposits = [];
 let receivables = [];
 let recurringPayables = [];
+let transfers = [];
 let timeFrame = localStorage.getItem('ledger_timeframe');
 if(timeFrame !== 'weekly' && timeFrame !== 'monthly') timeFrame = 'weekly';
 let activeTab = 'tracker';
 let gateStep = 'name'; // name | pin-existing | pin-new
 let gateName = '';
-let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null, unsubDeposits=null, unsubReceivables=null, unsubRecurring=null;
+let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null, unsubDeposits=null, unsubReceivables=null, unsubRecurring=null, unsubTransfers=null;
 
 function teardownSubs(){
+  if(unsubTransfers) unsubTransfers();
+  unsubTransfers=null;
   if(unsubProfile) unsubProfile();
   if(unsubMine) unsubMine();
   if(unsubShared) unsubShared();
@@ -330,7 +335,7 @@ function teardownSubs(){
 function logout(){
   teardownSubs();
   localStorage.removeItem('ledger_person_id');
-  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[]; deposits=[]; receivables=[]; recurringPayables=[];
+  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[]; deposits=[]; receivables=[]; recurringPayables=[]; transfers=[];
   gateStep='name'; gateName='';
   renderRoot();
 }
@@ -421,6 +426,12 @@ function subscribeAll(){
   const receivablesQ = query(collection(db,'people',personId,'receivables'), orderBy('createdAt','desc'), limit(200));
   unsubReceivables = onSnapshot(receivablesQ, snap=>{
     receivables = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, err=>console.error(err));
+
+  const transfersQ = query(collection(db,'people',personId,'transfers'), orderBy('createdAt','desc'), limit(100));
+  unsubTransfers = onSnapshot(transfersQ, snap=>{
+    transfers = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
   }, err=>console.error(err));
 
@@ -595,7 +606,7 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
       const usedPct = Math.min(100, (used/Number(s.creditLimit))*100);
       const gColor = usedPct>90?'var(--brick)':usedPct>70?'var(--amber)':'var(--peso)';
       return `
-        <div class="balance-row credit">
+        <div class="balance-row credit" data-account="${esc(s.id)}">
           <div class="credit-top">
             <div><div class="name">${esc(s.name)}</div><div class="type">${esc(s.type)}</div></div>
             <div class="mono ledger-amt" style="color:var(--peso)">${peso(s.balance)}</div>
@@ -606,7 +617,7 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
         </div>`;
     }
     return `
-    <div class="balance-row">
+    <div class="balance-row" data-account="${esc(s.id)}">
       <div><div class="name">${esc(s.name)}</div><div class="type">${esc(s.type)}${Number(s.interestRate)>0 ? ` · ${s.interestRate}% p.a. daily interest` : ''}</div></div>
       <div class="mono ledger-amt" style="color:${s.balance<0?'var(--brick)':'var(--peso)'}">${peso(s.balance)}</div>
     </div>`;
@@ -916,6 +927,12 @@ function wireTrackerOrSharedEvents(){
   if(payHubBtn) payHubBtn.onclick = openPayHubModal;
   const transferBtn = $('#open-transfer');
   if(transferBtn) transferBtn.onclick = openTransferModal;
+  document.querySelectorAll('[data-account]').forEach(row=>{
+    row.onclick = ev=>{
+      if(ev.target.closest('button')) return;
+      openAccountModal(row.dataset.account);
+    };
+  });
   const addReceivableBtn = $('#open-add-receivable');
   if(addReceivableBtn) addReceivableBtn.onclick = openAddReceivableModal;
   const addRecurringBtn = $('#open-add-recurring');
@@ -1566,6 +1583,56 @@ async function submitExpense(){
     $('#modal-save').textContent = 'Add Expense';
     $('#modal-save').disabled = false;
   }
+}
+
+/* ---------------- modal: account transactions ---------------- */
+function accountTransactions(s){
+  const rows = [];
+  myExpenses.forEach(e=>{
+    const match = e.moneySourceId ? e.moneySourceId===s.id : e.moneySource===s.name;
+    if(match) rows.push({ date:e.date, kind:'Expense', label:e.category + (e.notes ? ' · ' + e.notes : ''), amount:-Number(e.amount) });
+  });
+  deposits.forEach(d=>{
+    if(d.sourceId===s.id) rows.push({ date:d.date, kind:'Deposit', label:d.note || 'Deposit', amount:Number(d.amount) });
+  });
+  cardPayments.forEach(p=>{
+    if(p.cardId===s.id) rows.push({ date:p.date, kind:'Card payment', label:`Payment received · from ${p.from}`, amount:Number(p.amount) });
+    else if(p.from===s.name) rows.push({ date:p.date, kind:'Card payment', label:`Paid ${p.cardName}`, amount:-Number(p.amount) });
+  });
+  transfers.forEach(t=>{
+    if(t.fromId===s.id) rows.push({ date:t.date, kind:'Transfer', label:`To ${t.toName}` + (t.note ? ' · ' + t.note : ''), amount:-Number(t.amount) });
+    if(t.toId===s.id) rows.push({ date:t.date, kind:'Transfer', label:`From ${t.fromName}` + (t.note ? ' · ' + t.note : ''), amount:Number(t.amount) });
+  });
+  return rows.sort((a,b)=>new Date(b.date)-new Date(a.date));
+}
+
+function openAccountModal(accountId){
+  const s = profile.moneySources.find(x=>x.id===accountId);
+  if(!s) return;
+  const txns = accountTransactions(s).slice(0,150);
+  const isCredit = s.type==='Credit Card';
+  const list = txns.map(t=>`
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${esc(t.label)}</div>
+        <div class="ledger-meta">${new Date(t.date).toLocaleString('en-PH',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'})} · ${esc(t.kind)}</div>
+      </div>
+      <div class="mono ledger-amt" style="color:${t.amount<0?'var(--ink)':'var(--peso)'}">${t.amount<0?'-':'+'}${peso(Math.abs(t.amount))}</div>
+    </div>`).join('') || `<div class="empty-note">No transactions on this account yet.</div>`;
+
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>${esc(s.name)}</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">${isCredit ? 'Available credit' : 'Balance'}: <b class="mono">${peso(s.balance)}</b> · ${esc(s.type)}</div>
+        ${list}
+        <div class="field-hint" style="margin-top:12px">Shows expenses, deposits (including interest and receivable payments), transfers, and card payments. Balance changes made directly in Settings or when lending out money aren't listed.</div>
+        <div class="btn-row"><button class="btn ghost" id="modal-cancel">Close</button></div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
 }
 
 /* ---------------- modal: transfer ---------------- */
