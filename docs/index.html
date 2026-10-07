@@ -823,23 +823,75 @@ function peopleBalancesHtml(){
 
 function settleAllWith(otherId){
   const open = payables.filter(p=>!p.settled && ((p.fromId===personId && p.toId===otherId) || (p.toId===personId && p.fromId===otherId)));
-  if(!open.length) return;
-  const owedToMe = open.filter(p=>p.fromId===personId).reduce((s,p)=>s+Number(p.amount),0);
-  const iOwe = open.filter(p=>p.toId===personId).reduce((s,p)=>s+Number(p.amount),0);
-  const name = open[0].fromId===personId ? open[0].toName : open[0].fromName;
-  askChoice(
-    `Settle everything with ${name}?`,
-    `This marks ${open.length} open payable${open.length===1?'':'s'} as settled (${peso(owedToMe)} owed to you, ${peso(iOwe)} you owe). It doesn't move money between your accounts — log a deposit if the cash came in.`,
-    [
-      { label:'Settle all', run: async ()=>{
-          try{
-            for(const p of open) await settlePayableDoc(p);
-            toast(`Settled everything with ${name}`);
-          }catch(err){ console.error(err); toast('Could not settle all — try again'); }
-        } },
-      { label:'Cancel', cls:'ghost' }
-    ]
-  );
+  openSettleModal(open);
+}
+
+function openSettleModal(list){
+  if(!list.length) return;
+  const round2 = n => Math.round(n*100)/100;
+  const owedToMe = list.filter(p=>p.fromId===personId).reduce((s,p)=>s+Number(p.amount),0);
+  const iOwe = list.filter(p=>p.toId===personId).reduce((s,p)=>s+Number(p.amount),0);
+  const net = round2(owedToMe - iOwe);
+  const receiving = net > 0, paying = net < 0, amount = Math.abs(net);
+  const first = list[0];
+  const otherName = first.fromId===personId ? first.toName : first.fromName;
+  const title = receiving ? `${otherName} is paying you` : paying ? `Pay ${otherName}` : `Settle with ${otherName}`;
+  const sub = `Marks ${list.length} payable${list.length===1?'':'s'} as settled (${peso(owedToMe)} owed to you, ${peso(iOwe)} you owe).`;
+  const srcOptions = profile.moneySources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('')
+    + `<option value="external">External / not tracked in app</option>`;
+
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>${esc(title)}</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">${sub}</div>
+        ${amount>0 ? `
+        <div class="field"><label>${receiving ? 'Amount received' : 'Amount you pay'}</label><div class="mono" style="font-size:22px;font-weight:600;color:${receiving?'var(--peso)':'var(--brick)'}">${peso(amount)}</div></div>
+        <div class="field"><label>${receiving ? 'Deposit into' : 'Paid from'}</label><select id="st-acct">${srcOptions}</select></div>
+        <div class="field-hint">${receiving ? 'Adds the money to that account and logs a deposit.' : 'Takes the money out of that account.'} Only your own accounts change — ${esc(otherName)} records their side in their own tracker.</div>`
+        : `<div class="field-hint">These offset each other exactly, so no money moves.</div>`}
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">${receiving ? 'Confirm payment received' : paying ? 'Confirm payment' : 'Settle'}</button>
+        </div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
+  $('#modal-save').onclick = async ()=>{
+    const acctId = amount>0 ? $('#st-acct').value : 'external';
+    const src = acctId!=='external' ? profile.moneySources.find(s=>s.id===acctId) : null;
+    const saveBtn = $('#modal-save');
+    const label = saveBtn.textContent;
+    saveBtn.textContent = 'Saving…';
+    saveBtn.disabled = true;
+    try{
+      for(const p of list) await settlePayableDoc(p);
+      if(src && amount>0){
+        const delta = receiving ? amount : -amount;
+        const updatedSources = profile.moneySources.map(s => s.id===src.id ? {...s, balance: round2(Number(s.balance)+delta)} : s);
+        await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+        if(receiving){
+          await addDoc(collection(db,'people',personId,'deposits'), {
+            sourceId: src.id, sourceName: src.name, amount, note:`Payment from ${otherName}`, date:new Date().toISOString(), createdAt:Date.now()
+          });
+        }else{
+          await addDoc(collection(db,'people',personId,'adjustments'), {
+            sourceId: src.id, sourceName: src.name, amount: -amount, kind:'Payable paid', note:`Paid ${otherName}`, date:new Date().toISOString(), createdAt:Date.now()
+          });
+        }
+      }
+      closeModal();
+      toast(`Settled with ${otherName}`);
+    }catch(err){
+      console.error(err);
+      $('#modal-err').textContent = 'Could not save — try again.';
+      saveBtn.textContent = label;
+      saveBtn.disabled = false;
+    }
+  };
 }
 
 function payablesTabHtml(){
@@ -1042,16 +1094,9 @@ function wireTrackerOrSharedEvents(){
     b.onclick = ()=>openPayCardModal(b.dataset.payCard);
   });
   document.querySelectorAll('[data-settle-payable]').forEach(b=>{
-    b.onclick = async ()=>{
-      b.disabled = true;
-      try{
-        await settlePayableDoc(payables.find(x=>x.id===b.dataset.settlePayable) || { id: b.dataset.settlePayable });
-        toast('Marked as settled');
-      }catch(err){
-        console.error(err);
-        toast('Could not update — try again');
-        b.disabled = false;
-      }
+    b.onclick = ()=>{
+      const p = payables.find(x=>x.id===b.dataset.settlePayable);
+      if(p) openSettleModal([p]);
     };
   });
   document.querySelectorAll('[data-log-payment]').forEach(b=>{
@@ -1216,17 +1261,9 @@ function openPayHubModal(){
     b.onclick = ()=>openPayCardModal(b.dataset.hubPayCard);
   });
   $('#modal-root').querySelectorAll('[data-hub-settle]').forEach(b=>{
-    b.onclick = async ()=>{
-      b.disabled = true;
-      try{
-        await settlePayableDoc(payables.find(x=>x.id===b.dataset.hubSettle) || { id: b.dataset.hubSettle });
-        toast('Marked as settled');
-        openPayHubModal();
-      }catch(err){
-        console.error(err);
-        toast('Could not update — try again');
-        b.disabled = false;
-      }
+    b.onclick = ()=>{
+      const p = payables.find(x=>x.id===b.dataset.hubSettle);
+      if(p) openSettleModal([p]);
     };
   });
 }
