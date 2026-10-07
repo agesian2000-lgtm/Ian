@@ -656,7 +656,10 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
         <div class="ledger-cat">${esc(d.sourceName)}</div>
         <div class="ledger-meta">${new Date(d.date).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}${d.note ? ' · ' + esc(d.note) : ''}</div>
       </div>
-      <div class="mono ledger-amt" style="color:var(--peso)">+${peso(d.amount)}</div>
+      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+        <div class="mono ledger-amt" style="color:var(--peso)">+${peso(d.amount)}</div>
+        <button class="pay-btn" data-edit-deposit="${esc(d.id)}">Edit</button>
+      </div>
     </div>`).join('');
 
   const expenseRows = totals.filtered.length ? totals.filtered.map(e=>`
@@ -1245,6 +1248,9 @@ function wireTrackerOrSharedEvents(){
   });
   document.querySelectorAll('[data-bill-installment]').forEach(b=>{
     b.onclick = ()=>billNextInstallment(b.dataset.billInstallment);
+  });
+  document.querySelectorAll('[data-edit-deposit]').forEach(b=>{
+    b.onclick = ()=>openEditDepositModal(b.dataset.editDeposit);
   });
   document.querySelectorAll('[data-edit-expense]').forEach(b=>{
     b.onclick = ()=>openEditExpenseModal(b.dataset.editExpense);
@@ -2000,6 +2006,84 @@ function openTransferModal(){
       console.error(err);
       errEl.textContent = 'Could not save — try again.';
       $('#modal-save').textContent = 'Transfer';
+      $('#modal-save').disabled = false;
+    }
+  };
+}
+
+/* ---------------- modal: edit deposit ---------------- */
+function openEditDepositModal(id){
+  const d = deposits.find(x=>x.id===id);
+  if(!d) return;
+  const oldSource = profile.moneySources.find(s=>s.id===d.sourceId);
+  const opts = profile.moneySources.map(s=>`<option value="${esc(s.id)}" ${s.id===d.sourceId?'selected':''}>${esc(s.name)} (${peso(s.balance)})</option>`).join('');
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>Edit Deposit</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">Account balances adjust automatically.</div>
+        <div class="field"><label>Amount (₱)</label><input id="ed-amount" type="number" inputmode="decimal" min="0" step="0.01" value="${d.amount}"></div>
+        <div class="field"><label>Into</label><select id="ed-source">${opts}</select></div>
+        <div class="field"><label>Note</label><input id="ed-note" type="text" value="${esc(d.note||'')}"></div>
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">Save Changes</button>
+        </div>
+        <button class="btn ghost" id="ed-delete" style="margin-top:12px; color:var(--brick); border-color:var(--brick)">Delete deposit</button>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
+  const round2 = n => Math.round(n*100)/100;
+
+  $('#ed-delete').onclick = ()=>{
+    askChoice(
+      'Delete this deposit?',
+      `${peso(d.amount)} will be taken back out of ${oldSource ? oldSource.name : 'the account'}. This can't be undone.`,
+      [
+        { label:'Delete deposit', cls:'danger', run: async ()=>{
+            try{
+              if(oldSource){
+                const updatedSources = profile.moneySources.map(s => s.id===oldSource.id ? {...s, balance: round2(Number(s.balance)-Number(d.amount))} : s);
+                await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+              }
+              await deleteDoc(doc(db,'people',personId,'deposits',d.id));
+              closeModal();
+              toast('Deposit deleted');
+            }catch(err){ console.error(err); toast('Could not delete — try again'); }
+          } },
+        { label:'Cancel', cls:'ghost' }
+      ]
+    );
+  };
+
+  $('#modal-save').onclick = async ()=>{
+    const amount = parseFloat($('#ed-amount').value);
+    const newSourceId = $('#ed-source').value;
+    const note = $('#ed-note').value.trim();
+    const errEl = $('#modal-err');
+    if(!amount || amount<=0){ errEl.textContent='Enter a valid amount.'; return; }
+    const newSource = profile.moneySources.find(s=>s.id===newSourceId);
+    if(!newSource){ errEl.textContent='Select an account.'; return; }
+    $('#modal-save').textContent = 'Saving…';
+    $('#modal-save').disabled = true;
+    try{
+      const updatedSources = profile.moneySources.map(s=>{
+        let bal = Number(s.balance);
+        if(oldSource && s.id===oldSource.id) bal -= Number(d.amount);
+        if(s.id===newSource.id) bal += amount;
+        return round2(bal)===round2(Number(s.balance)) ? s : {...s, balance: round2(bal)};
+      });
+      await updateDoc(doc(db,'people',personId,'deposits',d.id), { amount, sourceId:newSource.id, sourceName:newSource.name, note });
+      await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+      closeModal();
+      toast('Deposit updated');
+    }catch(err){
+      console.error(err);
+      errEl.textContent = 'Could not save — try again.';
+      $('#modal-save').textContent = 'Save Changes';
       $('#modal-save').disabled = false;
     }
   };
