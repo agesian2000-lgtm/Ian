@@ -112,7 +112,7 @@
   .balance-list{display:flex; flex-direction:column; gap:0;}
   .balance-row{display:flex; justify-content:space-between; align-items:center; padding:11px 0; border-bottom:1px solid var(--line);}
   .balance-row:last-child{border-bottom:none;}
-  .balance-row[data-account]{cursor:pointer;}
+  .balance-row[data-account], .loan-card[data-account], .loan-card[data-loan], .loan-card[data-recurring-history], .ledger-row[data-payable-detail]{cursor:pointer;}
   .balance-row[data-account]:hover .name{text-decoration:underline;}
   .balance-row .name{font-weight:600; font-size:14px;}
   .balance-row .type{font-size:12px; color:var(--muted);}
@@ -195,7 +195,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, addDoc,
-  query, where, orderBy, limit, onSnapshot, runTransaction
+  query, where, orderBy, limit, onSnapshot, runTransaction, arrayUnion
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -612,7 +612,7 @@ function renderApp(){
       ${['weekly','monthly'].map(f=>`<button class="tf-btn ${timeFrame===f?'active':''}" data-tf="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
     </div>` : ''}
     <div id="tab-content"></div>
-    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-09b · refresh button</footer>
+    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-10 · payment history</footer>
   `;
 
   $('#switch-person').onclick = logout;
@@ -748,7 +748,7 @@ function renderLoanCard(r, archived){
   const pct = total>0 ? Math.min(100, (paidSoFar/total)*100) : 0;
   const isPaidOff = Number(r.balance) <= 0;
   return `
-  <div class="loan-card">
+  <div class="loan-card" data-loan="${esc(r.id)}">
     <div class="loan-top">
       <div><div class="name" style="font-weight:600">${esc(r.debtorName)}${r.payableId ? ' <span class="tag person">Shared</span>' : ''}</div><div class="type">${esc(r.item)}</div></div>
       <div class="mono ledger-amt" style="color:${isPaidOff?'var(--peso)':'var(--brick)'}">${isPaidOff ? 'Paid off' : peso(r.balance)}</div>
@@ -866,10 +866,17 @@ function openResolveSettlementModal(id){
   };
 }
 
+async function addReceivableHistory(ownerId, receivableId, entry){
+  await updateDoc(doc(db,'people',ownerId,'receivables',receivableId), {
+    history: arrayUnion({ date:new Date().toISOString(), ...entry })
+  });
+}
+
 async function settlePayableDoc(p){
   await updateDoc(doc(db,'payables',p.id), { settled:true, settledAt: new Date().toISOString() });
   if(p.receivableId && p.receivableOwnerId){
     await updateDoc(doc(db,'people',p.receivableOwnerId,'receivables',p.receivableId), { balance: 0 });
+    await addReceivableHistory(p.receivableOwnerId, p.receivableId, { kind:'Settled', amount:Number(p.amount)||0, note:'Marked settled' });
   }
 }
 
@@ -1064,9 +1071,9 @@ function payablesTabHtml(){
     const usedPct = limit>0 ? Math.min(100, (used/limit)*100) : 0;
     const gColor = usedPct>90?'var(--brick)':usedPct>70?'var(--amber)':'var(--peso)';
     return `
-    <div class="loan-card">
+    <div class="loan-card" data-account="${esc(c.id)}">
       <div class="loan-top">
-        <div><div class="name" style="font-weight:600">${esc(c.name)}</div><div class="type">Credit Card</div></div>
+        <div><div class="name" style="font-weight:600">${esc(c.name)}</div><div class="type">Credit Card · tap for history</div></div>
         <div class="mono ledger-amt" style="color:var(--brick)">${peso(used)}</div>
       </div>
       <div class="credit-gauge-track"><div class="credit-gauge-fill" style="width:${usedPct}%; background:${gColor}"></div></div>
@@ -1076,7 +1083,7 @@ function payablesTabHtml(){
   }).join('') || `<div class="empty-note">No credit cards yet — add one in Settings.</div>`;
 
   const peopleRows = myOwedPayables.map(p=>`
-    <div class="ledger-row">
+    <div class="ledger-row" data-payable-detail="${esc(p.id)}">
       <div class="ledger-main">
         <div class="ledger-cat">You owe ${esc(p.fromName)}</div>
         <div class="ledger-meta">${esc(p.category)} · ${new Date(p.date).toLocaleDateString('en-PH',{month:'short',day:'numeric'})}</div>
@@ -1114,7 +1121,7 @@ function payablesTabHtml(){
     const status = recurringStatus(r);
     const color = status.state==='paid' ? 'var(--peso)' : (status.state==='upcoming' ? 'var(--muted)' : 'var(--brick)');
     return `
-    <div class="loan-card">
+    <div class="loan-card" data-recurring-history="${esc(r.id)}">
       <div class="loan-top">
         <div><div class="name" style="font-weight:600">${esc(r.description)}</div><div class="type">Due on day ${r.dueDay} of the month</div></div>
         <div class="mono ledger-amt">${peso(r.amount)}</div>
@@ -1187,7 +1194,7 @@ function sharedTabHtml(tfLabel){
   const openPayables = payables.filter(p=>!p.settled);
   const settledPayables = payables.filter(p=>p.settled).slice(0,10);
   const payableRow = p => `
-    <div class="ledger-row">
+    <div class="ledger-row" data-payable-detail="${esc(p.id)}">
       <div class="ledger-main">
         <div class="ledger-cat">${esc(p.toName)} owes ${esc(p.fromName)}</div>
         <div class="ledger-meta">${esc(p.category)} · ${new Date(p.date).toLocaleDateString('en-PH',{month:'short',day:'numeric'})}</div>
@@ -1238,6 +1245,12 @@ function wireTrackerOrSharedEvents(){
   document.querySelectorAll('[data-settle-all]').forEach(b=>{
     b.onclick = ()=>settleAllWith(b.dataset.settleAll);
   });
+  const clickable = (sel, fn) => document.querySelectorAll(sel).forEach(el=>{
+    el.onclick = ev=>{ if(ev.target.closest('button')) return; fn(el); };
+  });
+  clickable('[data-loan]', el=>openLoanHistoryModal(el.dataset.loan));
+  clickable('[data-recurring-history]', el=>openRecurringHistoryModal(el.dataset.recurringHistory));
+  clickable('[data-payable-detail]', el=>openPayableDetailModal(el.dataset.payableDetail));
   document.querySelectorAll('[data-account]').forEach(row=>{
     row.onclick = ev=>{
       if(ev.target.closest('button')) return;
@@ -1527,6 +1540,7 @@ function openReceivablePaymentModal(receivableId){
       const newBalance = Math.max(0, Number(r.balance) - amount);
       await updateDoc(doc(db,'people',personId,'receivables',r.id), { balance: newBalance });
       await syncReceivablePayable(r, newBalance);
+      await addReceivableHistory(personId, r.id, { kind:'Payment', amount, note: intoSource ? `Into ${intoSource.name}` : 'External / not tracked' });
       if(intoSource){
         const updatedSources = profile.moneySources.map(s => s.id===intoSource.id ? {...s, balance: Number(s.balance)+amount} : s);
         await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
@@ -1554,6 +1568,7 @@ async function billNextInstallment(receivableId){
     const newBalance = Math.min(total, Number(r.balance) + Number(r.monthlyAmount));
     await updateDoc(doc(db,'people',personId,'receivables',r.id), { balance: newBalance });
     await syncReceivablePayable(r, newBalance);
+    await addReceivableHistory(personId, r.id, { kind:'Billed', amount:Number(r.monthlyAmount), note:'Installment billed' });
     toast(`Billed ${esc(r.debtorName)} for this month`);
   }catch(err){
     console.error(err);
@@ -1967,6 +1982,101 @@ function openAccountModal(accountId){
   $('#modal-x').onclick = closeModal;
   $('#modal-cancel').onclick = closeModal;
   $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
+}
+
+/* ---------------- history modals (loans, payables, bills) ---------------- */
+function showHistoryModal(title, subHtml, bodyHtml, footnote){
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>${title}</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">${subHtml}</div>
+        ${bodyHtml}
+        ${footnote ? `<div class="field-hint" style="margin-top:12px">${footnote}</div>` : ''}
+        <div class="btn-row"><button class="btn ghost" id="modal-cancel">Close</button></div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
+}
+
+function loanHistoryRows(history){
+  const sorted = [...(history||[])].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  return sorted.map(h=>{
+    const amt = Number(h.amount)||0;
+    const reduces = h.kind==='Payment' || h.kind==='Settled' || (h.kind==='Adjustment' && amt<0);
+    return `
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${esc(h.kind)}</div>
+        <div class="ledger-meta">${new Date(h.date).toLocaleString('en-PH',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'})}${h.note ? ' · ' + esc(h.note) : ''}</div>
+      </div>
+      <div class="mono ledger-amt" style="color:${reduces?'var(--peso)':'var(--brick)'}">${reduces?'−':'+'}${peso(Math.abs(amt))}</div>
+    </div>`;
+  }).join('') || `<div class="empty-note">No payments recorded yet.</div>`;
+}
+
+function loanSummaryHtml(r){
+  const total = Number(r.monthlyAmount)*Number(r.termMonths);
+  const paid = Math.max(0, total - Number(r.balance));
+  return `<div class="stat-grid" style="margin-bottom:10px">
+      <div class="stat-tile"><div class="label">Balance</div><div class="mono value" style="color:var(--brick)">${peso(r.balance)}</div></div>
+      <div class="stat-tile"><div class="label">Paid so far</div><div class="mono value" style="color:var(--peso)">${peso(paid)}</div></div>
+    </div>`;
+}
+
+function openLoanHistoryModal(id){
+  const r = receivables.find(x=>x.id===id);
+  if(!r) return;
+  showHistoryModal(
+    `${esc(r.debtorName)} · ${esc(r.item)}`,
+    `${peso(r.monthlyAmount)}/month for ${r.termMonths} months, started ${esc(r.startDate)}`,
+    loanSummaryHtml(r) + loanHistoryRows(r.history),
+    'History starts from when this feature was added — earlier payments aren\'t listed.'
+  );
+}
+
+async function openPayableDetailModal(id){
+  const p = payables.find(x=>x.id===id);
+  if(!p) return;
+  let rec = null;
+  if(p.receivableId && p.receivableOwnerId){
+    try{
+      const snap = await getDoc(doc(db,'people',p.receivableOwnerId,'receivables',p.receivableId));
+      if(snap.exists()) rec = { id:snap.id, ...snap.data() };
+    }catch(err){ console.error(err); }
+  }
+  const status = p.settled ? `Settled${p.settledAt ? ' on ' + new Date(p.settledAt).toLocaleDateString('en-PH',{month:'short',day:'numeric',year:'numeric'}) : ''}` : 'Open';
+  const detail = `
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${esc(p.toName)} owes ${esc(p.fromName)}</div>
+        <div class="ledger-meta">${esc(p.category)} · created ${new Date(p.date).toLocaleDateString('en-PH',{month:'short',day:'numeric',year:'numeric'})} · ${status}</div>
+      </div>
+      <div class="mono ledger-amt" style="color:${p.settled?'var(--muted)':'var(--brick)'}">${peso(p.amount)}</div>
+    </div>`;
+  const body = rec
+    ? detail + `<div class="section-title">Payment history</div>` + loanSummaryHtml(rec) + loanHistoryRows(rec.history)
+    : detail + `<div class="field-hint" style="margin-top:12px">This is a one-time amount, so there's no installment history. Open the Receivables tab for loans.</div>`;
+  showHistoryModal(esc(p.category), `${esc(p.fromName)} → ${esc(p.toName)}`, body,
+    rec ? 'History starts from when this feature was added — earlier payments aren\'t listed.' : '');
+}
+
+function openRecurringHistoryModal(id){
+  const r = recurringPayables.find(x=>x.id===id);
+  if(!r) return;
+  const paid = myExpenses.filter(e=>e.notes===r.description).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const rows = paid.map(e=>`
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">Paid</div>
+        <div class="ledger-meta">${new Date(e.date).toLocaleString('en-PH',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'})} · ${esc(e.moneySource)}</div>
+      </div>
+      <div class="mono ledger-amt">-${peso(e.amount)}</div>
+    </div>`).join('') || `<div class="empty-note">No payments recorded yet.</div>`;
+  showHistoryModal(esc(r.description), `${peso(r.amount)} due on day ${r.dueDay} of each month`, rows,
+    'Lists expenses logged with "Mark Paid" for this bill.');
 }
 
 /* ---------------- modal: transfer ---------------- */
@@ -2508,10 +2618,14 @@ function renderSettingsModal(scope='general'){
         if(!debtorName || !item || monthlyAmount<=0 || termMonths<=0 || !startDate){
           toast('Fill in all receivable fields'); return;
         }
+        const beforeRec = { ...receivables.find(x=>x.id===id) };
         await updateDoc(doc(db,'people',personId,'receivables',id), {
           debtorName, item, monthlyAmount, termMonths, startDate, balance
         });
-        await syncReceivablePayable(receivables.find(x=>x.id===id), balance);
+        await syncReceivablePayable(beforeRec, balance);
+        if(beforeRec && Math.abs(balance - Number(beforeRec.balance)) >= 0.01){
+          await addReceivableHistory(personId, id, { kind:'Adjustment', amount: Math.round((balance - Number(beforeRec.balance))*100)/100, note:'Balance edited in Settings' });
+        }
         toast('Receivable updated');
         refreshSettings(scope);
       };
