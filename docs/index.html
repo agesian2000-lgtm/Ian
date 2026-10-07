@@ -195,7 +195,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, addDoc,
-  query, orderBy, limit, onSnapshot, runTransaction
+  query, where, orderBy, limit, onSnapshot, runTransaction
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -312,14 +312,17 @@ let receivables = [];
 let recurringPayables = [];
 let transfers = [];
 let adjustments = [];
+let pendingSettlements = [];
 let timeFrame = localStorage.getItem('ledger_timeframe');
 if(timeFrame !== 'weekly' && timeFrame !== 'monthly') timeFrame = 'weekly';
 let activeTab = 'tracker';
 let gateStep = 'name'; // name | pin-existing | pin-new
 let gateName = '';
-let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null, unsubDeposits=null, unsubReceivables=null, unsubRecurring=null, unsubTransfers=null, unsubAdjustments=null;
+let unsubProfile=null, unsubMine=null, unsubShared=null, unsubPayments=null, unsubPayables=null, unsubDeposits=null, unsubReceivables=null, unsubRecurring=null, unsubTransfers=null, unsubAdjustments=null, unsubSettlements=null;
 
 function teardownSubs(){
+  if(unsubSettlements) unsubSettlements();
+  unsubSettlements=null;
   if(unsubTransfers) unsubTransfers();
   unsubTransfers=null;
   if(unsubAdjustments) unsubAdjustments();
@@ -338,7 +341,7 @@ function teardownSubs(){
 function logout(){
   teardownSubs();
   localStorage.removeItem('ledger_person_id');
-  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[]; deposits=[]; receivables=[]; recurringPayables=[]; transfers=[]; adjustments=[];
+  personId=null; profile=null; myExpenses=[]; sharedExpenses=[]; cardPayments=[]; payables=[]; deposits=[]; receivables=[]; recurringPayables=[]; transfers=[]; adjustments=[]; pendingSettlements=[];
   gateStep='name'; gateName='';
   renderRoot();
 }
@@ -435,6 +438,12 @@ function subscribeAll(){
   const transfersQ = query(collection(db,'people',personId,'transfers'), orderBy('createdAt','desc'), limit(100));
   unsubTransfers = onSnapshot(transfersQ, snap=>{
     transfers = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, err=>console.error(err));
+
+  const settlementsQ = query(collection(db,'settlements'), where('pendingFor','==',personId), where('resolved','==',false));
+  unsubSettlements = onSnapshot(settlementsQ, snap=>{
+    pendingSettlements = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
   }, err=>console.error(err));
 
@@ -666,6 +675,7 @@ function trackerTabHtml(totals, totalBalance, gaugeColor, pct, isOver, isWarn, t
     </div>`).join('') : `<div class="empty-note">No expenses recorded for this period.</div>`;
 
   return `
+    ${pendingSettlementsHtml()}
     <div class="btn-pair">
       <button class="btn" id="open-add-expense">+ Expense</button>
       <button class="btn outline-peso" id="open-deposit">+ Deposit</button>
@@ -761,6 +771,78 @@ function receivablesTabHtml(){
   `;
 }
 
+function pendingSettlementsHtml(){
+  if(!pendingSettlements.length) return '';
+  return pendingSettlements.map(s=>{
+    const paying = s.pendingKind==='pay';
+    return `
+    <div class="card" style="border-color:var(--ballpen); background:var(--ballpen-soft); margin-bottom:10px;">
+      <div style="font-weight:700; color:var(--ballpen)">${paying ? `You paid ${esc(s.otherName)}` : `${esc(s.otherName)} paid you`} · ${peso(s.amount)}</div>
+      <div class="ledger-meta" style="color:var(--ballpen); margin:4px 0 10px">${paying ? 'Which account did the money come out of?' : 'Which account did the money go into?'}</div>
+      <div style="display:flex; gap:8px;">
+        <button class="pay-btn" data-resolve-settlement="${esc(s.id)}">Choose account</button>
+        <button class="pay-btn secondary" data-dismiss-settlement="${esc(s.id)}">Skip</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function openResolveSettlementModal(id){
+  const s = pendingSettlements.find(x=>x.id===id);
+  if(!s) return;
+  const paying = s.pendingKind==='pay';
+  const srcOptions = profile.moneySources.map(x=>`<option value="${esc(x.id)}">${esc(x.name)} (${peso(x.balance)})</option>`).join('')
+    + `<option value="external">External / not tracked in app</option>`;
+  $('#modal-root').innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h2>${paying ? `You paid ${esc(s.otherName)}` : `${esc(s.otherName)} paid you`}</h2><button class="x-btn" id="modal-x">&times;</button></div>
+        <div class="modal-sub">${peso(s.amount)} was settled on ${new Date(s.date).toLocaleDateString('en-PH',{month:'short',day:'numeric'})}.</div>
+        <div class="field"><label>${paying ? 'Paid from' : 'Deposit into'}</label><select id="rs-acct">${srcOptions}</select></div>
+        <div class="field-hint">${paying ? 'Takes the money out of that account.' : 'Adds the money to that account and logs a deposit.'}</div>
+        <div class="err-text" id="modal-err"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="modal-cancel">Cancel</button>
+          <button class="btn" id="modal-save">Confirm</button>
+        </div>
+      </div>
+    </div>`;
+  $('#modal-x').onclick = closeModal;
+  $('#modal-cancel').onclick = closeModal;
+  $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
+  $('#modal-save').onclick = async ()=>{
+    const acctId = $('#rs-acct').value;
+    const src = acctId!=='external' ? profile.moneySources.find(x=>x.id===acctId) : null;
+    $('#modal-save').textContent = 'Saving…';
+    $('#modal-save').disabled = true;
+    try{
+      if(src){
+        const amount = Number(s.amount);
+        const delta = paying ? -amount : amount;
+        const updatedSources = profile.moneySources.map(x => x.id===src.id ? {...x, balance: Math.round((Number(x.balance)+delta)*100)/100} : x);
+        await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+        if(paying){
+          await addDoc(collection(db,'people',personId,'adjustments'), {
+            sourceId: src.id, sourceName: src.name, amount: -amount, kind:'Payable paid', note:`Paid ${s.otherName}`, date:new Date().toISOString(), createdAt:Date.now()
+          });
+        }else{
+          await addDoc(collection(db,'people',personId,'deposits'), {
+            sourceId: src.id, sourceName: src.name, amount, note:`Payment from ${s.otherName}`, date:new Date().toISOString(), createdAt:Date.now()
+          });
+        }
+      }
+      await updateDoc(doc(db,'settlements',s.id), { resolved:true, resolvedAt:new Date().toISOString() });
+      closeModal();
+      toast('Recorded');
+    }catch(err){
+      console.error(err);
+      $('#modal-err').textContent = 'Could not save — try again.';
+      $('#modal-save').textContent = 'Confirm';
+      $('#modal-save').disabled = false;
+    }
+  };
+}
+
 async function settlePayableDoc(p){
   await updateDoc(doc(db,'payables',p.id), { settled:true, settledAt: new Date().toISOString() });
   if(p.receivableId && p.receivableOwnerId){
@@ -848,7 +930,7 @@ function openSettleModal(list){
         ${amount>0 ? `
         <div class="field"><label>${receiving ? 'Amount received' : 'Amount you pay'}</label><div class="mono" style="font-size:22px;font-weight:600;color:${receiving?'var(--peso)':'var(--brick)'}">${peso(amount)}</div></div>
         <div class="field"><label>${receiving ? 'Deposit into' : 'Paid from'}</label><select id="st-acct">${srcOptions}</select></div>
-        <div class="field-hint">${receiving ? 'Adds the money to that account and logs a deposit.' : 'Takes the money out of that account.'} Only your own accounts change — ${esc(otherName)} records their side in their own tracker.</div>`
+        <div class="field-hint">${receiving ? 'Adds the money to that account and logs a deposit.' : 'Takes the money out of that account.'} ${esc(otherName)} will be asked to pick the account on their side.</div>`
         : `<div class="field-hint">These offset each other exactly, so no money moves.</div>`}
         <div class="err-text" id="modal-err"></div>
         <div class="btn-row">
@@ -869,6 +951,14 @@ function openSettleModal(list){
     saveBtn.disabled = true;
     try{
       for(const p of list) await settlePayableDoc(p);
+      if(amount>0){
+        const otherId = first.fromId===personId ? first.toId : first.fromId;
+        await addDoc(collection(db,'settlements'), {
+          pendingFor: otherId, pendingKind: receiving ? 'pay' : 'receive', amount,
+          otherId: personId, otherName: profile.displayName,
+          resolved: false, date: new Date().toISOString(), createdAt: Date.now()
+        });
+      }
       if(src && amount>0){
         const delta = receiving ? amount : -amount;
         const updatedSources = profile.moneySources.map(s => s.id===src.id ? {...s, balance: round2(Number(s.balance)+delta)} : s);
@@ -975,6 +1065,7 @@ function payablesTabHtml(){
   }).join('') || `<div class="empty-note">No recurring bills yet.</div>`;
 
   return `
+    ${pendingSettlementsHtml()}
     ${bannerHtml}
 
     <div class="btn-pair">
@@ -1071,6 +1162,16 @@ function wireTrackerOrSharedEvents(){
   if(payHubBtn) payHubBtn.onclick = openPayHubModal;
   const transferBtn = $('#open-transfer');
   if(transferBtn) transferBtn.onclick = openTransferModal;
+  document.querySelectorAll('[data-resolve-settlement]').forEach(b=>{
+    b.onclick = ()=>openResolveSettlementModal(b.dataset.resolveSettlement);
+  });
+  document.querySelectorAll('[data-dismiss-settlement]').forEach(b=>{
+    b.onclick = async ()=>{
+      b.disabled = true;
+      try{ await updateDoc(doc(db,'settlements',b.dataset.dismissSettlement), { resolved:true, resolvedAt:new Date().toISOString() }); }
+      catch(err){ console.error(err); toast('Could not update — try again'); b.disabled=false; }
+    };
+  });
   document.querySelectorAll('[data-settle-all]').forEach(b=>{
     b.onclick = ()=>settleAllWith(b.dataset.settleAll);
   });
