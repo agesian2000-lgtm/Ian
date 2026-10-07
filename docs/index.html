@@ -596,7 +596,10 @@ function renderApp(){
   app.innerHTML = `
     <div class="topbar">
       <div class="who">Signed in as <b>${esc(profile.displayName)}</b></div>
-      <button class="switch-btn" id="switch-person">Switch person</button>
+      <div style="display:flex; gap:16px; align-items:center;">
+        <button class="switch-btn" id="refresh-app">&#8635; Refresh</button>
+        <button class="switch-btn" id="switch-person">Switch person</button>
+      </div>
     </div>
     <div class="tabs">
       <button class="tab ${activeTab==='tracker'?'active':''}" data-tab="tracker">My Tracker</button>
@@ -609,10 +612,20 @@ function renderApp(){
       ${['weekly','monthly'].map(f=>`<button class="tf-btn ${timeFrame===f?'active':''}" data-tf="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
     </div>` : ''}
     <div id="tab-content"></div>
-    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-09 · no payment method field</footer>
+    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-09b · refresh button</footer>
   `;
 
   $('#switch-person').onclick = logout;
+  $('#refresh-app').onclick = async ()=>{
+    const btn = $('#refresh-app');
+    btn.textContent = 'Refreshing…';
+    btn.disabled = true;
+    try{
+      if(window.caches){ const keys = await caches.keys(); await Promise.all(keys.map(k=>caches.delete(k))); }
+      await fetch(location.pathname, { cache:'reload' });
+    }catch(err){ console.error(err); }
+    location.replace(location.pathname + '?v=' + Date.now());
+  };
   app.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{ activeTab=b.dataset.tab; render(); });
   app.querySelectorAll('.tf-btn').forEach(b=>b.onclick=()=>{ timeFrame=b.dataset.tf; localStorage.setItem('ledger_timeframe',timeFrame); render(); });
 
