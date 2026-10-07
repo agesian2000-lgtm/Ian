@@ -761,6 +761,75 @@ function receivablesTabHtml(){
   `;
 }
 
+function peopleBalancesHtml(){
+  const open = payables.filter(p=>!p.settled && (p.fromId===personId || p.toId===personId));
+  const map = {};
+  open.forEach(p=>{
+    const iAmCreditor = p.fromId===personId;
+    const otherId = iAmCreditor ? p.toId : p.fromId;
+    const otherName = iAmCreditor ? p.toName : p.fromName;
+    const m = map[otherId] || (map[otherId] = { name:otherName, owedToMe:0, iOwe:0, count:0 });
+    if(iAmCreditor) m.owedToMe += Number(p.amount)||0; else m.iOwe += Number(p.amount)||0;
+    m.count++;
+  });
+  const entries = Object.entries(map);
+  if(!entries.length) return '';
+  const totalOwedToMe = entries.reduce((s,[,m])=>s+m.owedToMe,0);
+  const totalIOwe = entries.reduce((s,[,m])=>s+m.iOwe,0);
+  const rows = entries.map(([id,m])=>{
+    const net = m.owedToMe - m.iOwe;
+    const color = net>=0 ? 'var(--peso)' : 'var(--brick)';
+    const breakdown = [
+      m.owedToMe>0 ? `owes you ${peso(m.owedToMe)}` : '',
+      m.iOwe>0 ? `you owe ${peso(m.iOwe)}` : ''
+    ].filter(Boolean).join(' · ');
+    return `
+    <div class="ledger-row">
+      <div class="ledger-main">
+        <div class="ledger-cat">${esc(m.name)}</div>
+        <div class="ledger-meta">${breakdown} · ${m.count} open</div>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+        <div class="mono ledger-amt" style="color:${color}">${net>=0?'':'-'}${peso(Math.abs(net))}</div>
+        <button class="pay-btn" data-settle-all="${esc(id)}">Settle all</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="card">
+      <div class="row-between"><h3>Balances with people</h3></div>
+      <div class="stat-grid" style="margin-bottom:6px">
+        <div class="stat-tile"><div class="label">Owed to you</div><div class="mono value" style="color:var(--peso)">${peso(totalOwedToMe)}</div></div>
+        <div class="stat-tile"><div class="label">You owe</div><div class="mono value" style="color:var(--brick)">${peso(totalIOwe)}</div></div>
+      </div>
+      ${rows}
+    </div>`;
+}
+
+function settleAllWith(otherId){
+  const open = payables.filter(p=>!p.settled && ((p.fromId===personId && p.toId===otherId) || (p.toId===personId && p.fromId===otherId)));
+  if(!open.length) return;
+  const owedToMe = open.filter(p=>p.fromId===personId).reduce((s,p)=>s+Number(p.amount),0);
+  const iOwe = open.filter(p=>p.toId===personId).reduce((s,p)=>s+Number(p.amount),0);
+  const name = open[0].fromId===personId ? open[0].toName : open[0].fromName;
+  askChoice(
+    `Settle everything with ${name}?`,
+    `This marks ${open.length} open payable${open.length===1?'':'s'} as settled (${peso(owedToMe)} owed to you, ${peso(iOwe)} you owe). It doesn't move money between your accounts — log a deposit if the cash came in.`,
+    [
+      { label:'Settle all', run: async ()=>{
+          try{
+            const at = new Date().toISOString();
+            for(const p of open){
+              await updateDoc(doc(db,'payables',p.id), { settled:true, settledAt: at });
+            }
+            toast(`Settled everything with ${name}`);
+          }catch(err){ console.error(err); toast('Could not settle all — try again'); }
+        } },
+      { label:'Cancel', cls:'ghost' }
+    ]
+  );
+}
+
 function payablesTabHtml(){
   const creditCards = profile.moneySources.filter(s=>s.type==='Credit Card');
   const totalCreditUsed = creditCards.reduce((sum,c)=>{
@@ -853,6 +922,7 @@ function payablesTabHtml(){
       <div class="stat-tile"><div class="label">Total Payable</div><div class="mono value" style="color:var(--brick)">${peso(totalPayable)}</div></div>
     </div>
 
+    ${peopleBalancesHtml()}
     <div class="card"><h3>Credit Cards</h3>${cardRows}</div>
     <div class="card"><h3>Owed to People</h3>${peopleRows}</div>
 
@@ -919,6 +989,7 @@ function sharedTabHtml(tfLabel){
       <div class="stat-tile"><div class="label">Total (${tfLabel})</div><div class="mono value">${peso(total)}</div></div>
       <div class="stat-tile"><div class="label">Contributors</div><div class="mono value">${people.size}</div></div>
     </div>
+    ${peopleBalancesHtml()}
     <div class="card"><h3>Payables</h3>${payablesHtml}</div>
     ${settledHtml ? `<div class="card"><h3>Recently Settled</h3>${settledHtml}</div>` : ''}
     <div class="card"><h3>By Category</h3>${barRows(catEntries, maxCat, 'var(--ballpen)')}</div>
@@ -936,6 +1007,9 @@ function wireTrackerOrSharedEvents(){
   if(payHubBtn) payHubBtn.onclick = openPayHubModal;
   const transferBtn = $('#open-transfer');
   if(transferBtn) transferBtn.onclick = openTransferModal;
+  document.querySelectorAll('[data-settle-all]').forEach(b=>{
+    b.onclick = ()=>settleAllWith(b.dataset.settleAll);
+  });
   document.querySelectorAll('[data-account]').forEach(row=>{
     row.onclick = ev=>{
       if(ev.target.closest('button')) return;
