@@ -2048,11 +2048,41 @@ async function openEditExpenseModal(expenseId){
           <button class="btn ghost" id="modal-cancel">Cancel</button>
           <button class="btn" id="modal-save">Save Changes</button>
         </div>
+        <button class="btn ghost" id="ee-delete" style="margin-top:12px; color:var(--brick); border-color:var(--brick)">Delete expense</button>
       </div>
     </div>`;
   $('#modal-x').onclick = closeModal;
   $('#modal-cancel').onclick = closeModal;
   $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
+
+  $('#ee-delete').onclick = ()=>{
+    askChoice(
+      'Delete this expense?',
+      `${peso(e.amount)} goes back to ${oldSource ? oldSource.name : 'the account'}, and it's removed from your list and the Shared Report${e.splitPayableId ? `, and the ${e.splitWho ? e.splitWho + ' ' : ''}payable is cancelled` : ''}. This can't be undone.`,
+      [
+        { label:'Delete expense', cls:'danger', run: async ()=>{
+            try{
+              if(oldSource){
+                const updatedSources = profile.moneySources.map(s=>{
+                  if(s.id!==oldSource.id) return s;
+                  let nb = Number(s.balance) + Number(e.amount);
+                  const limit = Number(s.creditLimit)||0;
+                  if(s.type==='Credit Card' && limit>0) nb = Math.min(nb, limit);
+                  return {...s, balance: Math.round(nb*100)/100};
+                });
+                await updateDoc(doc(db,'people',personId), { moneySources: updatedSources });
+              }
+              if(e.sharedId) await deleteDoc(doc(db,'sharedExpenses',e.sharedId));
+              if(e.splitPayableId) await deleteDoc(doc(db,'payables',e.splitPayableId));
+              await deleteDoc(doc(db,'people',personId,'expenses',e.id));
+              closeModal();
+              toast('Expense deleted');
+            }catch(err){ console.error(err); toast('Could not delete — try again'); }
+          } },
+        { label:'Cancel', cls:'ghost' }
+      ]
+    );
+  };
 
   const eeToggle = $('#ee-split-toggle');
   if(eeToggle){
