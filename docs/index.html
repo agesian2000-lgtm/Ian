@@ -586,7 +586,7 @@ function totalsFor(expenses, frame, budgets){
 function renderApp(){
   const app = $('#app');
   const totals = totalsFor(myExpenses, timeFrame, profile.budgets);
-  const totalBalance = profile.moneySources.reduce((s,m)=>s+Number(m.balance||0),0);
+  const totalBalance = profile.moneySources.filter(m=>m.type!=='Credit Card').reduce((s,m)=>s+Number(m.balance||0),0);
   const isOver = totals.spent > totals.budget;
   const isWarn = !isOver && totals.remaining < totals.budget*0.2;
   const gaugeColor = isOver ? 'var(--brick)' : isWarn ? 'var(--amber)' : 'var(--peso)';
@@ -612,7 +612,7 @@ function renderApp(){
       ${['weekly','monthly'].map(f=>`<button class="tf-btn ${timeFrame===f?'active':''}" data-tf="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
     </div>` : ''}
     <div id="tab-content"></div>
-    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-10 · payment history</footer>
+    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-10b · total excludes credit cards</footer>
   `;
 
   $('#switch-person').onclick = logout;
