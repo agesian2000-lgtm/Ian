@@ -908,7 +908,7 @@ function settleAllWith(otherId){
   openSettleModal(open);
 }
 
-function openSettleModal(list){
+async function openSettleModal(list){
   if(!list.length) return;
   const round2 = n => Math.round(n*100)/100;
   const owedToMe = list.filter(p=>p.fromId===personId).reduce((s,p)=>s+Number(p.amount),0);
@@ -917,6 +917,17 @@ function openSettleModal(list){
   const receiving = net > 0, paying = net < 0, amount = Math.abs(net);
   const first = list[0];
   const otherName = first.fromId===personId ? first.toName : first.fromName;
+  const otherId = first.fromId===personId ? first.toId : first.fromId;
+  let otherSources = [];
+  if(amount>0){
+    try{
+      const otherSnap = await getDoc(doc(db,'people',otherId));
+      if(otherSnap.exists()) otherSources = otherSnap.data().moneySources || [];
+    }catch(err){ console.error(err); }
+  }
+  const otherOptions = `<option value="ask">Let ${esc(otherName)} choose later</option>`
+    + otherSources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} · ${esc(s.type)}</option>`).join('')
+    + `<option value="external">External / not tracked in app</option>`;
   const title = receiving ? `${otherName} is paying you` : paying ? `Pay ${otherName}` : `Settle with ${otherName}`;
   const sub = `Marks ${list.length} payable${list.length===1?'':'s'} as settled (${peso(owedToMe)} owed to you, ${peso(iOwe)} you owe).`;
   const srcOptions = profile.moneySources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('')
@@ -929,8 +940,9 @@ function openSettleModal(list){
         <div class="modal-sub">${sub}</div>
         ${amount>0 ? `
         <div class="field"><label>${receiving ? 'Amount received' : 'Amount you pay'}</label><div class="mono" style="font-size:22px;font-weight:600;color:${receiving?'var(--peso)':'var(--brick)'}">${peso(amount)}</div></div>
-        <div class="field"><label>${receiving ? 'Deposit into' : 'Paid from'}</label><select id="st-acct">${srcOptions}</select></div>
-        <div class="field-hint">${receiving ? 'Adds the money to that account and logs a deposit.' : 'Takes the money out of that account.'} ${esc(otherName)} will be asked to pick the account on their side.</div>`
+        <div class="field"><label>${receiving ? 'Your account (money goes into)' : 'Your account (money comes from)'}</label><select id="st-acct">${srcOptions}</select></div>
+        <div class="field"><label>${receiving ? `${esc(otherName)}'s account (money comes from)` : `${esc(otherName)}'s account (money goes into)`}</label><select id="st-other">${otherOptions}</select></div>
+        <div class="field-hint">You can see the names of ${esc(otherName)}'s accounts but not their balances. Picking one updates their balance and logs it on their side too; "choose later" sends them a prompt instead.</div>`
         : `<div class="field-hint">These offset each other exactly, so no money moves.</div>`}
         <div class="err-text" id="modal-err"></div>
         <div class="btn-row">
@@ -952,12 +964,40 @@ function openSettleModal(list){
     try{
       for(const p of list) await settlePayableDoc(p);
       if(amount>0){
-        const otherId = first.fromId===personId ? first.toId : first.fromId;
-        await addDoc(collection(db,'settlements'), {
-          pendingFor: otherId, pendingKind: receiving ? 'pay' : 'receive', amount,
-          otherId: personId, otherName: profile.displayName,
-          resolved: false, date: new Date().toISOString(), createdAt: Date.now()
-        });
+        const otherChoice = $('#st-other').value;
+        if(otherChoice==='ask'){
+          await addDoc(collection(db,'settlements'), {
+            pendingFor: otherId, pendingKind: receiving ? 'pay' : 'receive', amount,
+            otherId: personId, otherName: profile.displayName,
+            resolved: false, date: new Date().toISOString(), createdAt: Date.now()
+          });
+        }else if(otherChoice!=='external'){
+          const theirSource = otherSources.find(s=>s.id===otherChoice);
+          const delta = receiving ? -amount : amount;
+          await runTransaction(db, async tx=>{
+            const ref = doc(db,'people',otherId);
+            const snap = await tx.get(ref);
+            const updated = (snap.data().moneySources||[]).map(s=>{
+              if(s.id!==otherChoice) return s;
+              let nb = Number(s.balance)+delta;
+              const limit = Number(s.creditLimit)||0;
+              if(delta>0 && s.type==='Credit Card' && limit>0) nb = Math.min(nb, limit);
+              return {...s, balance: round2(nb)};
+            });
+            tx.update(ref, { moneySources: updated });
+          });
+          if(receiving){
+            await addDoc(collection(db,'people',otherId,'adjustments'), {
+              sourceId: otherChoice, sourceName: theirSource ? theirSource.name : '', amount: -amount, kind:'Payable paid',
+              note:`Paid ${profile.displayName}`, date:new Date().toISOString(), createdAt:Date.now()
+            });
+          }else{
+            await addDoc(collection(db,'people',otherId,'deposits'), {
+              sourceId: otherChoice, sourceName: theirSource ? theirSource.name : '', amount,
+              note:`Payment from ${profile.displayName}`, date:new Date().toISOString(), createdAt:Date.now()
+            });
+          }
+        }
       }
       if(src && amount>0){
         const delta = receiving ? amount : -amount;
