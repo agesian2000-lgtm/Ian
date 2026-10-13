@@ -612,7 +612,7 @@ function renderApp(){
       ${['weekly','monthly'].map(f=>`<button class="tf-btn ${timeFrame===f?'active':''}" data-tf="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
     </div>` : ''}
     <div id="tab-content"></div>
-    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-10b · total excludes credit cards</footer>
+    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-14 · restore removed accounts</footer>
   `;
 
   $('#switch-person').onclick = logout;
@@ -2387,6 +2387,46 @@ function sourceCardHtml(s){
     </div>`;
 }
 
+function removedAccounts(){
+  const ids = new Set(profile.moneySources.map(s=>s.id));
+  const names = new Set(profile.moneySources.map(s=>s.name));
+  const found = {};
+  const note = (id, name, credit)=>{
+    if(!id && !name) return;
+    if(id ? ids.has(id) : names.has(name)) return;
+    if(name && names.has(name)) return;
+    const key = id || ('name:' + name);
+    const a = found[key] || (found[key] = { key, id: id || null, name: name || 'Removed account', credit:false });
+    if(name && a.name==='Removed account') a.name = name;
+    if(credit) a.credit = true;
+  };
+  myExpenses.forEach(e=>note(e.moneySourceId, e.moneySource, e.paymentMethod==='Credit Card'));
+  deposits.forEach(d=>note(d.sourceId, d.sourceName, false));
+  cardPayments.forEach(p=>{ note(p.cardId, p.cardName, true); if(p.from && p.from!=='External') note(null, p.from, false); });
+  transfers.forEach(t=>{ note(t.fromId, t.fromName, false); note(t.toId, t.toName, false); });
+  adjustments.forEach(a=>note(a.sourceId, a.sourceName, false));
+  return Object.values(found).map(a=>({ ...a, credit: a.credit || /credit|\bcc\b/i.test(a.name) }));
+}
+
+function removedAccountsHtml(wantCredit){
+  const list = removedAccounts().filter(a=>a.credit===wantCredit);
+  if(!list.length) return '';
+  const typeOptions = SOURCE_TYPES.filter(t=>t!=='Credit Card').map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');
+  return `
+        <div class="section-title">Removed accounts</div>
+        <div class="field-hint" style="margin-top:0;margin-bottom:10px">Found in your history but no longer in your accounts. Restoring one brings its transaction history back.</div>
+        ${list.map(a=>`
+        <div class="source-card">
+          <div class="source-top"><div><div class="name" style="font-weight:600">${esc(a.name)}</div><div class="type">${wantCredit?'Credit Card':'Account'} · removed</div></div></div>
+          <div class="source-edit">
+            ${wantCredit ? '' : `<div style="flex:1"><label style="font-size:11px;color:var(--muted)">Type</label><select data-ra-type="${esc(a.key)}" style="width:100%;height:36px;border:1px solid var(--line);border-radius:9px;background:var(--paper);color:var(--ink);padding:0 10px">${typeOptions}</select></div>`}
+            <div style="flex:1"><label style="font-size:11px;color:var(--muted)">${wantCredit?'Available credit':'Current balance'} (₱)</label><input type="number" step="0.01" value="0" data-ra-balance="${esc(a.key)}"></div>
+            ${wantCredit ? `<div style="flex:1"><label style="font-size:11px;color:var(--muted)">Credit limit (₱)</label><input type="number" step="0.01" value="0" data-ra-limit="${esc(a.key)}"></div>` : ''}
+          </div>
+          <button class="btn small" data-restore-acct="${esc(a.key)}" style="margin-top:8px">Restore</button>
+        </div>`).join('')}`;
+}
+
 function settingsGeneralHtml(){
   const b = profile.budgets;
   const catChips = profile.categories.map(c=>`
@@ -2414,7 +2454,8 @@ function settingsGeneralHtml(){
         <div class="field" style="margin-top:10px"><label>New account name</label><input id="new-src-name" type="text" placeholder="e.g. Maya"></div>
         <div class="field"><label>Type</label><select id="new-src-type">${typeOptions}</select></div>
         <div class="field"><label>Starting balance (₱)</label><input id="new-src-balance" type="number" step="0.01" value="0"></div>
-        <button class="btn small" id="add-src">Add Account</button>`;
+        <button class="btn small" id="add-src">Add Account</button>
+        ${removedAccountsHtml(false)}`;
 }
 
 function settingsReceivablesHtml(){
@@ -2474,6 +2515,7 @@ function settingsPayablesHtml(){
         <div class="field"><label>Available credit (₱)</label><input id="new-card-balance" type="number" step="0.01" value="0"></div>
         <div class="field"><label>Credit limit (₱)</label><input id="new-card-limit" type="number" step="0.01" value="0"></div>
         <button class="btn small" id="add-card">Add Credit Card</button>
+        ${removedAccountsHtml(true)}
 
         <div class="section-title">Edit recurring bills</div>
         ${recurring}`;
@@ -2501,11 +2543,42 @@ function renderSettingsModal(scope='general'){
 
   // shared by General (accounts) and Payables (credit cards)
   root.querySelectorAll('[data-remove-src]').forEach(b=>{
-    b.onclick = async ()=>{
+    b.onclick = ()=>{
       const id = b.dataset.removeSrc;
-      const updated = profile.moneySources.filter(s=>s.id!==id);
+      const s = profile.moneySources.find(x=>x.id===id);
+      askChoice(
+        `Remove ${s ? s.name : 'this account'}?`,
+        'Its current balance is dropped from the app. Past transactions stay in your history, and you can bring the account back under "Removed accounts" in this same Settings screen.',
+        [
+          { label:'Remove', cls:'danger', run: async ()=>{
+              const updated = profile.moneySources.filter(x=>x.id!==id);
+              await updateDoc(doc(db,'people',personId), { moneySources: updated });
+              profile = { ...profile, moneySources: updated };
+              renderSettingsModal(scope);
+            } },
+          { label:'Cancel', cls:'ghost' }
+        ]
+      );
+    };
+  });
+  root.querySelectorAll('[data-restore-acct]').forEach(b=>{
+    b.onclick = async ()=>{
+      const key = b.dataset.restoreAcct;
+      const a = removedAccounts().find(x=>x.key===key);
+      if(!a) return;
+      const pick = attr => [...root.querySelectorAll(`[${attr}]`)].find(el=>el.getAttribute(attr)===key);
+      const balance = parseFloat(pick('data-ra-balance').value)||0;
+      const typeEl = pick('data-ra-type');
+      const limitEl = pick('data-ra-limit');
+      const src = { id: a.id || cryptoId(), name: a.name, type: a.credit ? 'Credit Card' : (typeEl ? typeEl.value : 'Cash'), balance };
+      if(a.credit){
+        src.creditLimit = parseFloat(limitEl ? limitEl.value : 0)||0;
+        if(src.creditLimit<=0){ toast('Enter the credit limit'); return; }
+      }
+      const updated = [...profile.moneySources, src];
       await updateDoc(doc(db,'people',personId), { moneySources: updated });
       profile = { ...profile, moneySources: updated };
+      toast(`${a.name} restored`);
       renderSettingsModal(scope);
     };
   });
