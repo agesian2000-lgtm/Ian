@@ -612,7 +612,7 @@ function renderApp(){
       ${['weekly','monthly'].map(f=>`<button class="tf-btn ${timeFrame===f?'active':''}" data-tf="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}
     </div>` : ''}
     <div id="tab-content"></div>
-    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-10-24b · delete card payments</footer>
+    <footer class="security-note">PIN protection is for convenience, not encryption — keep this link within trusted family/friends.<br>Version 2026-11-17 · partial payments</footer>
   `;
 
   $('#switch-person').onclick = logout;
@@ -921,7 +921,7 @@ function peopleBalancesHtml(){
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
         <div class="mono ledger-amt" style="color:${color}">${net>=0?'':'-'}${peso(Math.abs(net))}</div>
-        <button class="pay-btn" data-settle-all="${esc(id)}">Settle all</button>
+        <button class="pay-btn" data-settle-all="${esc(id)}">Pay / settle</button>
       </div>
     </div>`;
   }).join('');
@@ -948,6 +948,8 @@ async function openSettleModal(list){
   const iOwe = list.filter(p=>p.toId===personId).reduce((s,p)=>s+Number(p.amount),0);
   const net = round2(owedToMe - iOwe);
   const receiving = net > 0, paying = net < 0, amount = Math.abs(net);
+  const fullAmount = amount;
+  const canPartial = amount > 0 && (owedToMe===0 || iOwe===0);
   const first = list[0];
   const otherName = first.fromId===personId ? first.toName : first.fromName;
   const otherId = first.fromId===personId ? first.toId : first.fromId;
@@ -962,7 +964,7 @@ async function openSettleModal(list){
     + otherSources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} · ${esc(s.type)}</option>`).join('')
     + `<option value="external">External / not tracked in app</option>`;
   const title = receiving ? `${otherName} is paying you` : paying ? `Pay ${otherName}` : `Settle with ${otherName}`;
-  const sub = `Marks ${list.length} payable${list.length===1?'':'s'} as settled (${peso(owedToMe)} owed to you, ${peso(iOwe)} you owe).`;
+  const sub = `${list.length} open payable${list.length===1?'':'s'} (${peso(owedToMe)} owed to you, ${peso(iOwe)} you owe). Pay it all to settle, or just part of it.`;
   const srcOptions = profile.moneySources.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${peso(s.balance)})</option>`).join('')
     + `<option value="external">External / not tracked in app</option>`;
 
@@ -972,7 +974,12 @@ async function openSettleModal(list){
         <div class="modal-head"><h2>${esc(title)}</h2><button class="x-btn" id="modal-x">&times;</button></div>
         <div class="modal-sub">${sub}</div>
         ${amount>0 ? `
-        <div class="field"><label>${receiving ? 'Amount received' : 'Amount you pay'}</label><div class="mono" style="font-size:22px;font-weight:600;color:${receiving?'var(--peso)':'var(--brick)'}">${peso(amount)}</div></div>
+        <div class="field"><label>${receiving ? 'Amount received' : 'Amount you pay'}</label>
+          ${canPartial
+            ? `<input id="st-amount" type="number" inputmode="decimal" min="0" step="0.01" value="${amount}">
+               <div class="field-hint">Owed in total: ${peso(fullAmount)}. Enter less to pay only part — the oldest payables are paid off first and the rest stays open.</div>`
+            : `<div class="mono" style="font-size:22px;font-weight:600;color:${receiving?'var(--peso)':'var(--brick)'}">${peso(amount)}</div>`}
+        </div>
         <div class="field"><label>${receiving ? 'Your account (money goes into)' : 'Your account (money comes from)'}</label><select id="st-acct">${srcOptions}</select></div>
         <div class="field"><label>${receiving ? `${esc(otherName)}'s account (money comes from)` : `${esc(otherName)}'s account (money goes into)`}</label><select id="st-other">${otherOptions}</select></div>
         <div class="field-hint">You can see the names of ${esc(otherName)}'s accounts but not their balances. Picking one updates their balance and logs it on their side too; "choose later" sends them a prompt instead.</div>`
@@ -988,6 +995,16 @@ async function openSettleModal(list){
   $('#modal-cancel').onclick = closeModal;
   $('#modal-overlay').addEventListener('click', ev=>{ if(ev.target.id==='modal-overlay') closeModal(); });
   $('#modal-save').onclick = async ()=>{
+    let amount = fullAmount;
+    if(canPartial){
+      const v = parseFloat($('#st-amount').value);
+      if(!v || v<=0 || v>fullAmount+0.004){
+        $('#modal-err').textContent = `Enter an amount between ${peso(0.01)} and ${peso(fullAmount)}.`;
+        return;
+      }
+      amount = round2(v);
+    }
+    const partial = canPartial && amount < fullAmount - 0.004;
     const acctId = amount>0 ? $('#st-acct').value : 'external';
     const src = acctId!=='external' ? profile.moneySources.find(s=>s.id===acctId) : null;
     const saveBtn = $('#modal-save');
@@ -995,7 +1012,8 @@ async function openSettleModal(list){
     saveBtn.textContent = 'Saving…';
     saveBtn.disabled = true;
     try{
-      for(const p of list) await settlePayableDoc(p);
+      if(partial) await applyPartialPayment(list, amount);
+      else for(const p of list) await settlePayableDoc(p);
       if(amount>0){
         const otherChoice = $('#st-other').value;
         if(otherChoice==='ask'){
@@ -1047,7 +1065,7 @@ async function openSettleModal(list){
         }
       }
       closeModal();
-      toast(`Settled with ${otherName}`);
+      toast(partial ? `Partial payment of ${peso(amount)} recorded` : `Settled with ${otherName}`);
     }catch(err){
       console.error(err);
       $('#modal-err').textContent = 'Could not save — try again.';
@@ -1055,6 +1073,28 @@ async function openSettleModal(list){
       saveBtn.disabled = false;
     }
   };
+}
+
+async function applyPartialPayment(list, paid){
+  const round2 = n => Math.round(n*100)/100;
+  let remaining = round2(paid);
+  const oldestFirst = [...list].sort((a,b)=>new Date(a.date)-new Date(b.date));
+  for(const p of oldestFirst){
+    if(remaining <= 0.004) break;
+    const amt = Number(p.amount);
+    if(remaining >= amt - 0.004){
+      await settlePayableDoc(p);
+      remaining = round2(remaining - amt);
+    }else{
+      const newAmt = round2(amt - remaining);
+      await updateDoc(doc(db,'payables',p.id), { amount: newAmt });
+      if(p.receivableId && p.receivableOwnerId){
+        await updateDoc(doc(db,'people',p.receivableOwnerId,'receivables',p.receivableId), { balance: newAmt });
+        await addReceivableHistory(p.receivableOwnerId, p.receivableId, { kind:'Payment', amount: remaining, note:'Partial payment' });
+      }
+      remaining = 0;
+    }
+  }
 }
 
 function payablesTabHtml(){
@@ -1093,7 +1133,7 @@ function payablesTabHtml(){
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
         <div class="mono ledger-amt" style="color:var(--brick)">${peso(p.amount)}</div>
-        <button class="pay-btn" data-settle-payable="${esc(p.id)}">Mark settled</button>
+        <button class="pay-btn" data-settle-payable="${esc(p.id)}">Pay / settle</button>
       </div>
     </div>`).join('') || `<div class="empty-note">You don't owe anyone right now.</div>`;
 
@@ -1204,7 +1244,7 @@ function sharedTabHtml(tfLabel){
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
         <div class="mono ledger-amt" style="color:${p.settled?'var(--muted)':'var(--brick)'}">${peso(p.amount)}</div>
-        ${p.settled ? `<span class="tag">Settled</span>` : `<button class="pay-btn" data-settle-payable="${esc(p.id)}">Mark settled</button>`}
+        ${p.settled ? `<span class="tag">Settled</span>` : `<button class="pay-btn" data-settle-payable="${esc(p.id)}">Pay / settle</button>`}
       </div>
     </div>`;
   const payablesHtml = openPayables.length
@@ -1422,7 +1462,7 @@ function openPayHubModal(){
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
         <div class="mono ledger-amt" style="color:var(--brick)">${peso(p.amount)}</div>
-        <button class="pay-btn" data-hub-settle="${esc(p.id)}">Mark settled</button>
+        <button class="pay-btn" data-hub-settle="${esc(p.id)}">Pay / settle</button>
       </div>
     </div>`;
   }).join('') || `<div class="empty-note">No open payables with anyone.</div>`;
